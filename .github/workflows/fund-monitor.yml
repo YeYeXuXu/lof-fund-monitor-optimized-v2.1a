@@ -1,0 +1,66 @@
+name: LOF Fund Monitor v1.6a 09:30-15:00 CST
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC; 01:30 UTC = 09:30 Asia/Shanghai.
+    - cron: '30 1 * * *'
+
+  workflow_dispatch:
+    inputs:
+      run_until:
+        description: '北京时间结束时间，例如 15:00；测试时可填 14:20'
+        required: false
+        default: '15:00'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lof-fund-monitor
+  cancel-in-progress: true
+
+jobs:
+  monitor:
+    name: Run LOF monitor v1.6a until 15:00 CST
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+
+    env:
+      TZ: Asia/Shanghai
+      WECHAT_SEND_KEY: ${{ secrets.WECHAT_SEND_KEY }}
+      SERVERCHAN_SENDKEYS: ${{ secrets.SERVERCHAN_SENDKEYS }}
+      WECHAT_PUSH_ENABLED: ${{ vars.WECHAT_PUSH_ENABLED }}
+      WECHAT_PUSH_TIME: ${{ vars.WECHAT_PUSH_TIME }}
+      PREMIUM_ALERT_ENABLED: ${{ vars.PREMIUM_ALERT_ENABLED }}
+      DISCOUNT_ALERT_ENABLED: ${{ vars.DISCOUNT_ALERT_ENABLED }}
+      PREMIUM_UPPER: ${{ vars.PREMIUM_UPPER }}
+      DISCOUNT_LOWER: ${{ vars.DISCOUNT_LOWER }}
+      MIN_TURNOVER: ${{ vars.MIN_TURNOVER }}
+      ACTIONS_PUSH_GRACE_SECONDS: ${{ vars.ACTIONS_PUSH_GRACE_SECONDS }}
+      ACTIONS_REFRESH_HOLDINGS: ${{ vars.ACTIONS_REFRESH_HOLDINGS }}
+      ACTIONS_FETCH_PURCHASE_STATUS: ${{ vars.ACTIONS_FETCH_PURCHASE_STATUS }}
+      AKSHARE_FUND_CACHE_TTL: ${{ vars.AKSHARE_FUND_CACHE_TTL }}
+      RUN_UNTIL: ${{ inputs.run_until || '15:00' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Initialize runtime config
+        run: |
+          python scripts/github_actions_init.py
+
+      - name: Run monitor
+        run: |
+          python scripts/run_actions_monitor.py --until "$RUN_UNTIL"
