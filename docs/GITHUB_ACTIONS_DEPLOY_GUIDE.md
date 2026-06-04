@@ -86,9 +86,6 @@ git push -u origin main
 | `AKSHARE_FUND_CACHE_TTL` | `60` | AkShare 批量行情快照缓存秒数，减少重复请求 |
 | `AKSHARE_FUND_HTTP_RETRIES` | `3` | AkShare/EastMoney 断连或超时后的重试次数 |
 | `AKSHARE_FUND_HTTP_TIMEOUT` | `8` | 单次 AkShare/EastMoney 请求超时秒数 |
-| `AKSHARE_FUND_ESTIMATION_TIMEOUT` | `5` | `fund_value_estimation_em` 每个估值分类的最长等待秒数，避免慢分类阻塞刷新 |
-| `AKSHARE_FUND_ESTIMATION_SYMBOLS` | `LOF,场内交易基金,QDII` | AkShare 估值分类；如“场内交易基金”经常超时，可改为 `LOF,QDII` |
-| `WECHAT_AKSHARE_OVERLAY_TIMEOUT` | `5` | 微信到点推送时 AkShare 快照叠加最长等待秒数；超时后直接使用已保存实时数据 |
 
 如果不配置这些 Variables，脚本会使用上面的默认值。v1.9a 会优先使用 AkShare 批量快照做行情、IOPV、折溢价率、申购/赎回状态和微信阈值筛选；缺失字段再走原有接口。
 

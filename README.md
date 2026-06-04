@@ -7,17 +7,17 @@
 
 ## 净值估值模型优化v1.9a 更新
 
-- v1.9a 修复：AkShare `fund_value_estimation_em(场内交易基金)` 超时改为可选估值分类单项限时降级，避免一个慢分类拖慢整轮快照或微信到点推送。
-- v1.9a 修复：AkShare `f402` 字段按项目内部“正数=溢价、负数=折价”约定归一化；当 IOPV 和价格可用时会用 `(最新价 - IOPV) / IOPV × 100%` 校验正负号。
-- v1.9a 修复：微信阈值推送中过滤不可操作基金，溢价列表过滤申购状态为“暂停/停止/不可/封闭”的基金，折价列表过滤赎回状态为“暂停/停止/不可/封闭”的基金。
-- v1.9a 增强：数据刷新调度会打印当前刷新模式、下次刷新倒计时、每轮开始/完成统计和 AkShare 快照命中情况；微信到点推送最多等待 `WECHAT_AKSHARE_OVERLAY_TIMEOUT` 秒，超时即使用已保存实时数据，避免被数据刷新影响。
+- v1.9a 修复：`fund_value_estimation_em`（LOF/场内交易基金/QDII）超时改为“可选估值源跳过”的 INFO 日志，不再作为告警级报错，也不会阻塞行情刷新和微信定时推送。
+- v1.9a 增强：AkShare `fund_purchase_em` 除申购/赎回状态外，同步解析“最新净值/报告时间”，在估值接口不可用时仍可优先从 AkShare 获取官方单位净值。
+- v1.9a 校正：ETF 优先使用 AkShare `fund_etf_spot_em` 的 `f402=基金折价率`；LOF 因 AkShare `fund_lof_spot_em` 源码未提供 `f402/f441`，改为用“最佳估算净值/官方净值 + 交易价”计算，并在日志打印 `EstNAV` 与 `PremiumBase` 便于核对。
+- v1.9a 增强：数据刷新增加 started / AkShare snapshot / progress / completed / waiting 日志；微信告警到点时若 AkShare 快照刷新锁被后台任务占用，会直接使用缓存快照和已保存实时数据，确保微信推送不等待刷新锁。
 - v1.9a 修复：微信阈值告警正文中的申购/赎回状态优先使用 AkShare `fund_purchase_em` 批量接口；接口缺失、超时或单只基金未命中时，自动回退原东方财富 F10/基金页状态解析。
 - v1.9a 调整：微信定时推送到点后不再等待后台数据刷新任务释放锁；推送使用已保存实时数据叠加快速 AkShare 快照，确保数据刷新不影响微信定时推送。
 - v1.9a 明确：开盘/交易时段每 5 分钟刷新基金数据，休市/非交易时段每 30 分钟刷新；该刷新节奏与微信推送时间相互独立。
 - v1.9a 修复：AkShare/EastMoney 行情接口增加 `push2`、`push2delay`、`88.push2`、`2.push2` 多主机兜底，并对断连、超时、空响应进行重试，降低 `ServerDisconnectedError` 导致整批 LOF 快照不可用的概率。
 - v1.9a 增强：GitHub Actions/服务日志会输出每只基金的 `Source=[...]`，明确 NAV、估值、价格和折溢价来自 AkShare 还是原有接口/计算兜底。
 - 新增 AkShare release v1.18.64 基金信息适配层 `akshare_fund_adapter.py`，项目内异步复刻并优先使用 `fund_etf_spot_em`、`fund_lof_spot_em`、`fund_value_estimation_em` 获取基金行情、IOPV、折溢价率、成交金额和净值估算信息。
-- 明确采用 AkShare `fund_etf_spot_em` 字段映射：东方财富 `f441` = `IOPV实时估值`，`f402` = `基金折价率`；项目会结合最新价和 IOPV 将其归一化为“正数=溢价、负数=折价”的折溢价率。
+- 明确采用 AkShare `fund_etf_spot_em` 字段映射：东方财富 `f441` = `IOPV实时估值`，`f402` = `基金折价率`，微信告警和项目展示中的溢价/折价筛选均优先使用同一个 `f402` 有符号值。
 - GitHub Actions 运行时每轮批量获取 AkShare 快照并缓存，减少逐基金行情/估值请求；微信定时推送在筛选前进行快速 AkShare 内存叠加，不等待完整持仓刷新，也不等待后台刷新锁。
 - 若 AkShare 快照缺少某只基金或某项字段，仍自动回退原有 fundgz/lsjz、push2、F10 持仓及申购赎回状态获取方法；申赎状态优先来自 AkShare `fund_purchase_em`。
 - 新增统一、可复用的净值估值模型 `estimate_nav_unified`：所有国内、港股、QDII/海外基金统一返回估算净值、估算涨跌、模型版本、估值方法、置信度和估值说明。
