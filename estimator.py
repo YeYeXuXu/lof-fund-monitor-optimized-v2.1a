@@ -25,15 +25,15 @@ from typing import Any
 from fetcher import (
     fetch_fx_change_rate,
     fetch_index_info,
-    fetch_stock_change_rate,
+    fetch_stock_change_info,
     fetch_us_index_info,
-    fetch_us_stock_change_rate,
+    fetch_us_stock_change_info,
     build_best_effort_us_em_code,
 )
 
 logger = logging.getLogger(__name__)
 
-MODEL_VERSION = "净值估值模型优化v2.1a"
+MODEL_VERSION = "净值估值模型优化v2.2a"
 
 # China Standard Time (UTC+8)
 CST = timezone(timedelta(hours=8))
@@ -128,6 +128,72 @@ def _estimate_nav(nav: float, change_rate_pct: float) -> float:
     return round(nav * (1 + change_rate_pct / 100.0), 4)
 
 
+def _parse_date(value: Any):
+    """Parse NAV/quote date text to a date object for same-day guard checks."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = re.search(r"(20\d{2})[-/年.]?(\d{1,2})[-/月.]?(\d{1,2})", text)
+    if not match:
+        return None
+    try:
+        year, month, day = map(int, match.groups())
+        return datetime(year, month, day, tzinfo=CST).date()
+    except ValueError:
+        return None
+
+
+def _guard_change_by_nav_date(nav_date: str, trade_date: str, change_rate: float) -> tuple[float, dict]:
+    """Avoid applying a quote/index daily return already covered by published NAV.
+
+    If the latest official NAV date is the same as or later than the quote's
+    trading date, the daily quote/index change belongs to a day already included
+    in that NAV.  Returning a zero change avoids double-counting that day.
+    """
+    nav_day = _parse_date(nav_date)
+    trade_day = _parse_date(trade_date)
+    raw_change = _as_float(change_rate, 0.0)
+    if nav_day and trade_day:
+        if nav_day >= trade_day:
+            return 0.0, {
+                "checked": True,
+                "skipped": True,
+                "nav_date": nav_day.isoformat(),
+                "trade_date": trade_day.isoformat(),
+                "note": f"NAV日期{nav_day.isoformat()}已覆盖/晚于行情交易日{trade_day.isoformat()}，未重复叠加当日涨跌",
+            }
+        return raw_change, {
+            "checked": True,
+            "skipped": False,
+            "nav_date": nav_day.isoformat(),
+            "trade_date": trade_day.isoformat(),
+            "note": f"NAV日期{nav_day.isoformat()}早于行情交易日{trade_day.isoformat()}，允许叠加当日涨跌",
+        }
+    if nav_day and not trade_day:
+        return raw_change, {
+            "checked": False,
+            "skipped": False,
+            "nav_date": nav_day.isoformat(),
+            "trade_date": "",
+            "note": "行情交易日缺失，无法校验是否与NAV日期错配",
+        }
+    if trade_day and not nav_day:
+        return raw_change, {
+            "checked": False,
+            "skipped": False,
+            "nav_date": "",
+            "trade_date": trade_day.isoformat(),
+            "note": "NAV日期缺失，无法校验是否重复叠加当日涨跌",
+        }
+    return raw_change, {
+        "checked": False,
+        "skipped": False,
+        "nav_date": "",
+        "trade_date": "",
+        "note": "NAV日期和行情交易日缺失，无法做日期匹配校验",
+    }
+
+
 def _parse_report_date(value: str) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -188,10 +254,11 @@ async def _fetch_asset_change_rate(session: aiohttp.ClientSession, holding: dict
 
     prefix = _market_prefix(em_code)
     if _is_us_like_market(prefix):
-        asset_change = await fetch_us_stock_change_rate(session, em_code)
+        quote_info = await fetch_us_stock_change_info(session, em_code)
     else:
-        asset_change = await fetch_stock_change_rate(session, em_code)
+        quote_info = await fetch_stock_change_info(session, em_code)
 
+    asset_change = _as_float(quote_info.get("change_rate", 0.0))
     fx_pair = _fx_pair_for_em_code(em_code)
     fx_change = await fetch_fx_change_rate(session, fx_pair) if fx_pair else 0.0
     total_change = _compound_return_pct(asset_change, fx_change)
@@ -199,9 +266,11 @@ async def _fetch_asset_change_rate(session: aiohttp.ClientSession, holding: dict
         "asset_change_rate": round(asset_change, 4),
         "fx_change_rate": round(fx_change, 4),
         "change_rate": round(total_change, 4),
-        "em_code": em_code,
+        "em_code": quote_info.get("em_code", em_code),
         "fx_pair": fx_pair,
-        "quote_ok": True,
+        "quote_time": quote_info.get("quote_time", ""),
+        "trade_date": quote_info.get("trade_date", ""),
+        "quote_ok": bool(quote_info),
     }
 
 
@@ -241,6 +310,8 @@ async def _fetch_proxy_change_rate(session: aiohttp.ClientSession, proxy_code: s
         "fx_pair": fx_pair,
         "fx_change_rate": round(fx_change, 4),
         "change_rate": round(change, 4),
+        "quote_time": info.get("quote_time", ""),
+        "trade_date": info.get("trade_date", ""),
     }
 
 
@@ -252,6 +323,7 @@ def _holding_result(
     category: str,
     target_exposure: float | None = None,
     residual_beta: float = 0.85,
+    nav_date: str = "",
 ) -> dict:
     """Build holdings-based NAV estimate from already-fetched quote data."""
     if nav <= 0:
@@ -263,11 +335,18 @@ def _holding_result(
     coverage = 0.0
     known_contribution = 0.0
     quote_ok_count = 0
+    date_skipped_count = 0
+    date_unchecked_count = 0
 
     for holding, quote in zip(holdings, quote_results):
         ratio = max(0.0, _as_float(holding.get("holding_ratio", 0)))
         weight = ratio / 100.0
-        change_rate = _as_float(quote.get("change_rate", 0))
+        raw_change_rate = _as_float(quote.get("change_rate", 0))
+        change_rate, date_guard = _guard_change_by_nav_date(nav_date, quote.get("trade_date", ""), raw_change_rate)
+        if date_guard.get("skipped"):
+            date_skipped_count += 1
+        elif quote.get("quote_ok") and not date_guard.get("checked"):
+            date_unchecked_count += 1
         contribution = weight * change_rate
         coverage += weight
         known_contribution += contribution
@@ -280,10 +359,15 @@ def _holding_result(
             "stock_name": holding.get("stock_name", ""),
             "holding_ratio": round(ratio, 4),
             "em_code": quote.get("em_code", holding.get("em_code", "")),
-            "asset_change_rate": round(_as_float(quote.get("asset_change_rate", change_rate)), 2),
+            "asset_change_rate": round(_as_float(quote.get("asset_change_rate", raw_change_rate)), 2),
             "fx_pair": quote.get("fx_pair", ""),
             "fx_change_rate": round(_as_float(quote.get("fx_change_rate", 0)), 2),
+            "raw_change_rate": round(raw_change_rate, 2),
             "change_rate": round(change_rate, 2),
+            "trade_date": quote.get("trade_date", ""),
+            "quote_time": quote.get("quote_time", ""),
+            "nav_date": date_guard.get("nav_date", ""),
+            "date_check": date_guard.get("note", ""),
             "contribution_pct": round(contribution, 4),
             "report_date": holding.get("report_date", ""),
         })
@@ -302,7 +386,12 @@ def _holding_result(
 
     if residual_weight > 0:
         if proxy_info and proxy_info.get("change_rate") is not None:
-            residual_change = _as_float(proxy_info.get("change_rate", 0))
+            raw_residual_change = _as_float(proxy_info.get("change_rate", 0))
+            residual_change, date_guard = _guard_change_by_nav_date(nav_date, proxy_info.get("trade_date", ""), raw_residual_change)
+            if date_guard.get("skipped"):
+                date_skipped_count += 1
+            elif not date_guard.get("checked"):
+                date_unchecked_count += 1
             residual_source = "proxy_index"
             residual_weighted_change = residual_weight * residual_change * residual_beta
             details.append({
@@ -310,10 +399,15 @@ def _holding_result(
                 "index_code": proxy_info.get("index_code", ""),
                 "index_name": proxy_info.get("index_name", ""),
                 "index_value": proxy_info.get("index_value", 0),
-                "asset_change_rate": round(_as_float(proxy_info.get("asset_change_rate", residual_change)), 2),
+                "asset_change_rate": round(_as_float(proxy_info.get("asset_change_rate", raw_residual_change)), 2),
                 "fx_pair": proxy_info.get("fx_pair", ""),
                 "fx_change_rate": round(_as_float(proxy_info.get("fx_change_rate", 0)), 2),
+                "raw_change_rate": round(raw_residual_change, 2),
                 "change_rate": round(residual_change, 2),
+                "trade_date": proxy_info.get("trade_date", ""),
+                "quote_time": proxy_info.get("quote_time", ""),
+                "nav_date": date_guard.get("nav_date", ""),
+                "date_check": date_guard.get("note", ""),
                 "residual_ratio": round(residual_weight * 100, 2),
                 "residual_beta": residual_beta,
                 "contribution_pct": round(residual_weighted_change, 4),
@@ -350,11 +444,18 @@ def _holding_result(
     quote_score = quote_ok_count / len(holdings) if holdings else 0.0
     coverage_score = coverage / target if target > 0 else 0.0
     proxy_bonus = 0.15 if proxy_info else 0.0
-    confidence = max(0.05, min(0.95, 0.25 + 0.35 * coverage_score + 0.20 * quote_score + proxy_bonus - penalty))
+    date_penalty = min(0.25, 0.05 * date_skipped_count + 0.02 * date_unchecked_count)
+    confidence = max(0.05, min(0.95, 0.25 + 0.35 * coverage_score + 0.20 * quote_score + proxy_bonus - penalty - date_penalty))
 
+    date_notes = []
+    if date_skipped_count:
+        date_notes.append(f"{date_skipped_count}个行情因NAV日期已覆盖/晚于交易日而未重复叠加")
+    if date_unchecked_count:
+        date_notes.append(f"{date_unchecked_count}个行情缺少NAV日期或交易日，无法完全校验")
+    date_note = f"；日期校验：{'，'.join(date_notes)}" if date_notes else ""
     note = (
         f"持仓覆盖{coverage * 100:.1f}%，目标暴露{target * 100:.1f}%，"
-        f"未知部分来源：{residual_source}；{stale_note}"
+        f"未知部分来源：{residual_source}；{stale_note}{date_note}"
     )
 
     return {
@@ -389,6 +490,7 @@ async def estimate_nav_by_holdings(
     holdings: list,
     proxy_index_code: str = "",
     category: str = "domestic",
+    nav_date: str = "",
 ) -> dict:
     """Estimate NAV from disclosed holdings plus an optional residual proxy.
 
@@ -411,13 +513,14 @@ async def estimate_nav_by_holdings(
     quote_results = [q if isinstance(q, dict) else {} for q in quote_results]
 
     proxy_info = await _fetch_proxy_change_rate(session, proxy_index_code) if proxy_index_code else {}
-    return _holding_result(nav, holdings, quote_results, proxy_info, category)
+    return _holding_result(nav, holdings, quote_results, proxy_info, category, nav_date=nav_date)
 
 
 async def estimate_nav_by_industry_index(
     session: aiohttp.ClientSession,
     nav: float,
     index_code: str,
+    nav_date: str = "",
 ) -> dict:
     """Estimate NAV based on a configured industry/index proxy.
 
@@ -432,11 +535,16 @@ async def estimate_nav_by_industry_index(
     if not proxy_info:
         return _empty_result(nav, "index_proxy", f"无法获取指数 {index_code} 行情")
 
-    change_rate = _as_float(proxy_info.get("change_rate", 0))
+    raw_change_rate = _as_float(proxy_info.get("change_rate", 0))
+    change_rate, date_guard = _guard_change_by_nav_date(nav_date, proxy_info.get("trade_date", ""), raw_change_rate)
     estimated_nav = _estimate_nav(nav, change_rate)
     confidence = 0.88
     if proxy_info.get("fx_pair"):
         confidence = 0.82  # FX quote may be approximate/fallback.
+    if date_guard.get("skipped"):
+        confidence = min(confidence, 0.45)
+    elif not date_guard.get("checked"):
+        confidence = min(confidence, 0.70)
 
     return {
         "estimated_nav": estimated_nav,
@@ -448,15 +556,20 @@ async def estimate_nav_by_industry_index(
             "index_code": index_code,
             "index_name": proxy_info.get("index_name", ""),
             "index_value": proxy_info.get("index_value", 0),
-            "asset_change_rate": round(_as_float(proxy_info.get("asset_change_rate", change_rate)), 2),
+            "asset_change_rate": round(_as_float(proxy_info.get("asset_change_rate", raw_change_rate)), 2),
             "fx_pair": proxy_info.get("fx_pair", ""),
             "fx_change_rate": round(_as_float(proxy_info.get("fx_change_rate", 0)), 2),
+            "raw_change_rate": round(raw_change_rate, 2),
             "change_rate": round(change_rate, 2),
+            "trade_date": proxy_info.get("trade_date", ""),
+            "quote_time": proxy_info.get("quote_time", ""),
+            "nav_date": date_guard.get("nav_date", ""),
+            "date_check": date_guard.get("note", ""),
         }],
         "model_version": MODEL_VERSION,
         "valuation_method": "index_proxy",
         "valuation_confidence": confidence,
-        "valuation_note": "使用配置指数/行业指数涨跌幅估算整只基金净值",
+        "valuation_note": f"使用配置指数/行业指数涨跌幅估算整只基金净值；日期校验：{date_guard.get('note', '')}",
     }
 
 
@@ -466,6 +579,7 @@ async def estimate_nav_by_overseas_holdings(
     cn_change_rate: float,
     overseas_holdings: list,
     us_index_code: str,
+    nav_date: str = "",
 ) -> dict:
     """Estimate NAV for QDII/overseas funds.
 
@@ -497,10 +611,17 @@ async def estimate_nav_by_overseas_holdings(
             "overseas",
             target_exposure=DEFAULT_TARGET_EXPOSURE["overseas"],
             residual_beta=1.0,
+            nav_date=nav_date,
         )
         result["valuation_method"] = "overseas_holdings_plus_proxy"
     elif proxy_info:
-        change_rate = _as_float(proxy_info.get("change_rate", 0))
+        raw_change_rate = _as_float(proxy_info.get("change_rate", 0))
+        change_rate, date_guard = _guard_change_by_nav_date(nav_date, proxy_info.get("trade_date", ""), raw_change_rate)
+        confidence = 0.78
+        if date_guard.get("skipped"):
+            confidence = 0.42
+        elif not date_guard.get("checked"):
+            confidence = 0.62
         result = {
             "estimated_nav": _estimate_nav(nav, change_rate),
             "estimated_change_rate": round(change_rate, 2),
@@ -509,17 +630,22 @@ async def estimate_nav_by_overseas_holdings(
                 "index_code": us_index_code,
                 "index_name": proxy_info.get("index_name", ""),
                 "index_value": proxy_info.get("index_value", 0),
-                "asset_change_rate": round(_as_float(proxy_info.get("asset_change_rate", change_rate)), 2),
+                "asset_change_rate": round(_as_float(proxy_info.get("asset_change_rate", raw_change_rate)), 2),
                 "fx_pair": proxy_info.get("fx_pair", ""),
                 "fx_change_rate": round(_as_float(proxy_info.get("fx_change_rate", 0)), 2),
+                "raw_change_rate": round(raw_change_rate, 2),
                 "change_rate": round(change_rate, 2),
+                "trade_date": proxy_info.get("trade_date", ""),
+                "quote_time": proxy_info.get("quote_time", ""),
+                "nav_date": date_guard.get("nav_date", ""),
+                "date_check": date_guard.get("note", ""),
                 "period": f"时段{period}",
                 "note": "无可用境外持仓，使用配置的境外指数/商品/ETF代理",
             }],
             "model_version": MODEL_VERSION,
             "valuation_method": "overseas_proxy",
-            "valuation_confidence": 0.78,
-            "valuation_note": "无可用境外持仓，使用配置代理并尝试叠加汇率变动",
+            "valuation_confidence": confidence,
+            "valuation_note": f"无可用境外持仓，使用配置代理并尝试叠加汇率变动；日期校验：{date_guard.get('note', '')}",
         }
     else:
         # Last resort: keep the public fund estimate if it exists. This is better
@@ -539,11 +665,7 @@ async def estimate_nav_by_overseas_holdings(
             "valuation_note": "缺少境外持仓和代理指数，结果仅作保守兜底",
         }
 
-    us_change = 0.0
-    if proxy_info:
-        us_change = _as_float(proxy_info.get("change_rate", 0))
-    else:
-        us_change = _as_float(result.get("estimated_change_rate", 0))
+    us_change = _as_float(result.get("estimated_change_rate", 0))
 
     result.update({
         "period": period,
@@ -615,7 +737,7 @@ async def estimate_nav_unified(
 
     # 1) Explicit index/industry funds: use configured index for the whole fund.
     if algo_type == "industry" and industry_index_code:
-        primary = await estimate_nav_by_industry_index(session, nav, industry_index_code)
+        primary = await estimate_nav_by_industry_index(session, nav, industry_index_code, data.get("nav_date", ""))
         return _pick_primary_or_fallback(primary, fallback, nav)
 
     # 2) Overseas/QDII: use foreign holdings if available, otherwise configured
@@ -627,6 +749,7 @@ async def estimate_nav_unified(
             _as_float(data.get("source_estimated_change_rate", data.get("estimated_change_rate", 0))),
             data.get("overseas_holdings", []),
             us_index_code,
+            data.get("nav_date", ""),
         )
         return _pick_primary_or_fallback(primary, fallback, nav)
 
@@ -637,5 +760,5 @@ async def estimate_nav_unified(
     if category == "hk":
         holdings.extend(list(data.get("overseas_holdings", []) or []))
     proxy_code = industry_index_code or DEFAULT_RESIDUAL_PROXY.get(category, "")
-    primary = await estimate_nav_by_holdings(session, nav, holdings, proxy_code, category)
+    primary = await estimate_nav_by_holdings(session, nav, holdings, proxy_code, category, data.get("nav_date", ""))
     return _pick_primary_or_fallback(primary, fallback, nav)

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 CST = timezone(timedelta(hours=8))
 SERVERCHAN_URL = "https://sctapi.ftqq.com"
-MODEL_VERSION_TEXT = "净值估值模型优化v2.1a"
+MODEL_VERSION_TEXT = "净值估值模型优化v2.2a"
 
 STATUS_ICON = {
     "开放": "✅",
@@ -189,9 +189,9 @@ def _fmt_vol(amount: float) -> str:
         return f"{amount / 10000:.0f}万"
     return "--"
 
-SOURCE_LABEL_AKSHARE_RAW = "akshare数据"
-SOURCE_LABEL_AKSHARE_LOCAL = "akshare本地计算数据"
-SOURCE_LABEL_PROJECT = "项目原有方法计算"
+SOURCE_LABEL_AKSHARE = "akshare"
+SOURCE_LABEL_PROJECT = "项目原方法"
+SOURCE_LABEL_MIXED = "akshare+项目原方法"
 
 
 def _source_text(value: object) -> str:
@@ -204,43 +204,81 @@ def _source_contains_akshare(*values: object) -> bool:
     return any("akshare" in _source_text(value) for value in values)
 
 
-def _metric_source_label(fund: dict, metric: str) -> str:
-    """Return the short source label required in WeChat alert rows.
+def _source_contains_project_method(*values: object) -> bool:
+    """Return True when source markers came from the project's original path."""
+    markers = (
+        "original",
+        "valuation_model",
+        "fund_api_fallback",
+        "holdings_plus_proxy",
+        "index_proxy",
+        "overseas_proxy",
+        "calculated_from",
+        "fundgz",
+        "eastmoney",
+        "pingzhongdata",
+    )
+    for value in values:
+        text = _source_text(value)
+        if "akshare" in text:
+            # AkShare adapters also call EastMoney-compatible endpoints; keep them
+            # classified as AkShare unless another source marker shows project logic.
+            text = text.replace("akshare", "")
+        if any(marker in text for marker in markers):
+            return True
+    return False
 
-    Labels intentionally use only the user-facing text after the colon:
-    - akshare数据: raw values returned by an AkShare-compatible method.
-    - akshare本地计算数据: locally calculated values using AkShare-sourced inputs.
-    - 项目原有方法计算: values from the monitor's original fallback/model path.
+
+def _method_label_from_sources(*values: object) -> str:
+    uses_akshare = _source_contains_akshare(*values)
+    uses_project = _source_contains_project_method(*values)
+    if uses_akshare and uses_project:
+        return SOURCE_LABEL_MIXED
+    if uses_akshare:
+        return SOURCE_LABEL_AKSHARE
+    return SOURCE_LABEL_PROJECT
+
+
+def _metric_source_label(fund: dict, metric: str) -> str:
+    """Return the parenthesized source label for WeChat alert rows.
+
+    For 折溢价率/交易价格/估算净值, show ``akshare+项目原方法`` only
+    when that metric actually combines AkShare inputs with the project's original
+    fallback/model/calculation path; otherwise show the method actually used.
     """
     if metric == "trade_price":
-        return SOURCE_LABEL_AKSHARE_RAW if _source_contains_akshare(fund.get("price_source")) else SOURCE_LABEL_PROJECT
+        return _method_label_from_sources(fund.get("price_source"))
 
     if metric == "trade_amount":
         source = fund.get("trade_amount_source") or fund.get("amount_source") or fund.get("price_source")
-        return SOURCE_LABEL_AKSHARE_RAW if _source_contains_akshare(source) else SOURCE_LABEL_PROJECT
+        return _method_label_from_sources(source)
 
     if metric == "estimated_nav":
-        source = fund.get("estimate_source") or fund.get("valuation_method") or fund.get("nav_source")
-        return SOURCE_LABEL_AKSHARE_RAW if _source_contains_akshare(source) else SOURCE_LABEL_PROJECT
+        estimate_source = fund.get("estimate_source") or ""
+        valuation_method = fund.get("valuation_method") or ""
+        values = [estimate_source, valuation_method]
+        if _source_contains_project_method(estimate_source, valuation_method):
+            # Project valuation uses the latest official NAV as its base; include
+            # nav_source so AkShare NAV + project model is labeled as mixed.
+            values.append(fund.get("nav_source"))
+        elif not estimate_source and not valuation_method:
+            values.append(fund.get("nav_source"))
+        return _method_label_from_sources(*values)
 
     if metric == "premium_rate":
-        premium_source = _source_text(fund.get("premium_source"))
-        # AkShare ETF f402 is a raw discount-rate field; the displayed
-        # monitor convention is the signed premium/discount rate, so the
-        # displayed value is locally transformed from AkShare data.
-        if "f402" in premium_source and _source_contains_akshare(premium_source):
-            return SOURCE_LABEL_AKSHARE_LOCAL
-        if premium_source.startswith("calculated_from_"):
-            if _source_contains_akshare(
+        premium_source = fund.get("premium_source") or ""
+        premium_source_text = _source_text(premium_source)
+        if premium_source_text.startswith("calculated_from_"):
+            return _method_label_from_sources(
+                premium_source,
                 fund.get("price_source"),
                 fund.get("trade_amount_source"),
                 fund.get("premium_base_source"),
                 fund.get("estimate_source"),
                 fund.get("nav_source"),
-            ):
-                return SOURCE_LABEL_AKSHARE_LOCAL
-            return SOURCE_LABEL_PROJECT
-        return SOURCE_LABEL_AKSHARE_RAW if _source_contains_akshare(premium_source) else SOURCE_LABEL_PROJECT
+                fund.get("valuation_method"),
+            )
+        return _method_label_from_sources(premium_source)
 
     return SOURCE_LABEL_PROJECT
 

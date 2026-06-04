@@ -415,7 +415,7 @@ async def _apply_valuation_model(session: aiohttp.ClientSession, fund: dict, dat
         if data.get("akshare_premium_rate") is not None:
             data["premium_rate"] = round(float(data.get("akshare_premium_rate") or 0), 2)
             data["premium_source"] = data.get("premium_source") or data.get("akshare_source") or "akshare.fund_etf_spot_em:f402_基金折价率取反为折溢价率"
-        data["model_version"] = "净值估值模型优化v2.1a"
+        data["model_version"] = "净值估值模型优化v2.2a"
         data["valuation_method"] = "akshare_fund_etf_spot_em_iopv"
         data["valuation_confidence"] = 0.9
         data["valuation_note"] = "优先使用 AkShare fund_etf_spot_em：f441=IOPV实时估值；f402=基金折价率，已取反为折溢价率"
@@ -425,7 +425,7 @@ async def _apply_valuation_model(session: aiohttp.ClientSession, fund: dict, dat
     estimate_source_text = f"{data.get('estimate_source', '')};{data.get('akshare_source', '')}"
     if source_estimated_nav > 0 and "akshare.fund_value_estimation_em" in estimate_source_text:
         data["estimated_nav"] = round(source_estimated_nav, 4)
-        data["model_version"] = "净值估值模型优化v2.1a"
+        data["model_version"] = "净值估值模型优化v2.2a"
         data["valuation_method"] = "akshare_fund_value_estimation_em"
         data["valuation_confidence"] = 0.85
         data["valuation_note"] = "优先使用 AkShare fund_value_estimation_em 净值估算；缺失时才回退本地估值模型"
@@ -1196,6 +1196,47 @@ def _passes_turnover_filter(fund: dict, values: dict) -> bool:
     return trade_amount >= values["min_turnover"] * 10000
 
 
+def _is_paused_status(value: object) -> bool:
+    """Return True for paused purchase/redemption statuses after normalization."""
+    text = str(value or "").strip()
+    return "暂停" in text or "停止" in text or "不可" in text or "封闭" in text
+
+
+def _alert_blocked_by_status(fund: dict) -> tuple[bool, str]:
+    """Apply WeChat-specific actionability filters for premium/discount alerts."""
+    premium = fund.get("premium_rate", 0) or 0
+    threshold_type = fund.get("threshold_type", "")
+    if threshold_type == "premium_upper" or premium > 0:
+        if _is_paused_status(fund.get("purchase_status")):
+            return True, "溢价基金申购暂停"
+    if threshold_type == "discount_lower" or premium < 0:
+        if _is_paused_status(fund.get("redeem_status")):
+            return True, "折价基金赎回暂停"
+    return False, ""
+
+
+def _filter_actionable_alerts(alerts: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Remove alerts that cannot be acted on due to paused申购/赎回 status."""
+    kept: list[dict] = []
+    excluded: list[dict] = []
+    for item in alerts:
+        blocked, reason = _alert_blocked_by_status(item)
+        if blocked:
+            excluded.append({**item, "excluded_reason": reason})
+        else:
+            kept.append(item)
+    return kept, excluded
+
+
+def _triggered_conditions(alerts: list[dict]) -> list[str]:
+    conditions: list[str] = []
+    for item in alerts:
+        threshold_type = item.get("threshold_type", "")
+        if threshold_type and threshold_type not in conditions:
+            conditions.append(threshold_type)
+    return conditions
+
+
 def _passes_threshold_filter(fund: dict, values: dict) -> bool:
     premium = fund.get("premium_rate", 0) or 0
     threshold_enabled = values["premium_enabled"] or values["discount_enabled"]
@@ -1253,7 +1294,7 @@ def _format_push_percent(value: float) -> str:
 
 
 def _build_threshold_alert_title(values: dict, conditions: list) -> str:
-    """Build the only scheduled WeChat push title for v2.1a.
+    """Build the only scheduled WeChat push title for v2.2a.
 
     Example: LOF折溢价告警 溢价3% 成交60万
     """
@@ -1342,22 +1383,32 @@ async def check_threshold_alerts(config: dict = None) -> dict:
             return {"success": True, "sent": False, "msg": "没有基金满足告警筛选条件", "count": 0}
 
         await _ensure_alert_purchase_statuses(alerts)
+        alerts, excluded_alerts = _filter_actionable_alerts(alerts)
+        if excluded_alerts:
+            logger.info(
+                "Alert status filter excluded %s funds: %s",
+                len(excluded_alerts),
+                ", ".join(f"{item.get('fund_code', '')}:{item.get('excluded_reason', '')}" for item in excluded_alerts[:20]),
+            )
+        if not alerts:
+            logger.info(
+                "Alert push skipped: threshold candidates were all excluded by purchase/redeem status; excluded=%s",
+                len(excluded_alerts),
+            )
+            return {"success": True, "sent": False, "msg": "满足阈值的基金均因申购/赎回暂停被剔除", "count": 0}
+        conditions = _triggered_conditions(alerts)
 
-        enabled_conditions = []
-        if values["premium_enabled"]:
-            enabled_conditions.append("premium_upper")
-        if values["discount_enabled"]:
-            enabled_conditions.append("discount_lower")
-
-        # v2.1a: automatic WeChat push sends exactly one threshold-alert message
+        # v2.2a: automatic WeChat push sends exactly one threshold-alert message
         # with a compact title such as "LOF折溢价告警 溢价3% 折价-5% 成交60万".
-        title = _build_threshold_alert_title(values, enabled_conditions)
+        # The condition list is rebuilt after paused申购/赎回 filtering so the title
+        # and body describe only the remaining actionable alerts.
+        title = _build_threshold_alert_title(values, conditions)
         content = build_threshold_alert_message(
             alerts,
             values["premium_upper"],
             values["discount_lower"],
             values["min_turnover"],
-            enabled_conditions,
+            conditions,
         )
         result = await send_wechat_message(send_key, title, content)
         if result["success"]:
@@ -1375,7 +1426,7 @@ async def check_threshold_alerts(config: dict = None) -> dict:
 
 
 async def periodic_wechat_push():
-    """Automatic WeChat alert task for v2.1a.
+    """Automatic WeChat alert task for v2.2a.
 
     Strict rules:
     1. Only the configured push_time values are allowed to trigger a push.
@@ -1825,13 +1876,13 @@ async def api_save_wechat_config(request):
 
 
 async def api_test_wechat_push(request):
-    """v2.1a keeps this route as a no-op so no extra WeChat messages are sent."""
-    return web.json_response({"code": -1, "msg": "v2.1a 已取消测试推送；微信只在设置时间发送 1 条 LOF折溢价告警"})
+    """v2.2a keeps this route as a no-op so no extra WeChat messages are sent."""
+    return web.json_response({"code": -1, "msg": "v2.2a 已取消测试推送；微信只在设置时间发送 1 条 LOF折溢价告警"})
 
 
 async def api_send_summary_now(request):
-    """v2.1a removes summary pushes; keep this route as a safe no-op for compatibility."""
-    return web.json_response({"code": -1, "msg": "v2.1a 已取消汇总推送；自动微信推送只在设置时间发送 1 条 LOF折溢价告警"})
+    """v2.2a removes summary pushes; keep this route as a safe no-op for compatibility."""
+    return web.json_response({"code": -1, "msg": "v2.2a 已取消汇总推送；自动微信推送只在设置时间发送 1 条 LOF折溢价告警"})
 
 
 # ============ Static File Serving ============

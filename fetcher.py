@@ -4,7 +4,7 @@ import re
 import json
 import logging
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,26 @@ async def _read_json_response(resp: aiohttp.ClientResponse) -> dict:
     except json.JSONDecodeError:
         logger.debug("Non-JSON EastMoney response: status=%s body=%s", resp.status, text[:120])
         return {}
+
+
+def _format_quote_time(value) -> str:
+    """Format EastMoney f124 quote timestamp (seconds) as local time text."""
+    try:
+        timestamp = float(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if timestamp <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _quote_trade_date(value) -> str:
+    """Return the trading date implied by EastMoney quote timestamp f124."""
+    quote_time = _format_quote_time(value)
+    return quote_time[:10] if quote_time else ""
 
 
 async def _fetch_push2_quote(session: aiohttp.ClientSession, secid: str, fields: str,
@@ -331,6 +351,34 @@ async def fetch_fund_holdings(session: aiohttp.ClientSession, fund_code: str) ->
     return []
 
 
+async def fetch_stock_change_info(session: aiohttp.ClientSession, em_code: str) -> dict:
+    """Fetch a stock/index real-time change rate with quote trade-date metadata."""
+    em_code = str(em_code or "").strip().strip(".")
+    if not em_code:
+        return {}
+    try:
+        d = await _fetch_push2_quote(session, em_code, "f43,f170,f44,f45,f46,f47,f57,f58,f124", timeout=10, retries=2)
+        if d:
+            change_rate = d.get("f170", 0)
+            if change_rate in (None, "-"):
+                change_rate_val = 0.0
+            else:
+                change_rate_val = float(change_rate) / 100.0
+            quote_time = _format_quote_time(d.get("f124"))
+            return {
+                "em_code": em_code,
+                "asset_name": d.get("f58", ""),
+                "asset_value": d.get("f43", 0),
+                "change_rate": round(change_rate_val, 4),
+                "quote_time": quote_time,
+                "trade_date": quote_time[:10] if quote_time else _quote_trade_date(d.get("f124")),
+            }
+        logger.debug("No data for %s", em_code)
+    except Exception as e:
+        logger.warning("Error fetching stock change for %s: %s", em_code, _fmt_exc(e))
+    return {}
+
+
 async def fetch_stock_change_rate(session: aiohttp.ClientSession, em_code: str) -> float:
     """Fetch a stock/index real-time change rate using EastMoney push2 API.
 
@@ -338,20 +386,8 @@ async def fetch_stock_change_rate(session: aiohttp.ClientSession, em_code: str) 
     0.000001 for SZ). The function retries push2delay and push2 so transient
     GitHub Actions network timeouts do not become noisy ERROR logs.
     """
-    em_code = str(em_code or "").strip().strip(".")
-    if not em_code:
-        return 0.0
-    try:
-        d = await _fetch_push2_quote(session, em_code, "f43,f170,f44,f45,f46,f47,f57,f58", timeout=10, retries=2)
-        if d:
-            change_rate = d.get("f170", 0)
-            if change_rate in (None, "-"):
-                return 0.0
-            return float(change_rate) / 100.0
-        logger.debug("No data for %s", em_code)
-    except Exception as e:
-        logger.warning("Error fetching stock change for %s: %s", em_code, _fmt_exc(e))
-    return 0.0
+    info = await fetch_stock_change_info(session, em_code)
+    return float(info.get("change_rate", 0.0) or 0.0)
 
 
 def _normalize_purchase_status_text(value: str) -> str:
@@ -526,7 +562,7 @@ async def fetch_index_info(session: aiohttp.ClientSession, index_code: str) -> d
         url = "http://push2delay.eastmoney.com/api/qt/stock/get"
         params = {
             "secid": index_code,
-            "fields": "f43,f44,f45,f57,f58,f169,f170"
+            "fields": "f43,f44,f45,f57,f58,f169,f170,f124"
         }
         async with session.get(url, params=params, headers=HEADERS_QUOTE, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             content_type = resp.headers.get('Content-Type', '')
@@ -559,28 +595,25 @@ async def fetch_index_info(session: aiohttp.ClientSession, index_code: str) -> d
                 else:
                     index_value = raw_value
 
+                quote_time = _format_quote_time(d.get("f124"))
                 return {
                     "index_code": index_code,
                     "index_name": index_name,
                     "index_value": index_value,
                     "change_rate": round(change_rate, 2),
+                    "quote_time": quote_time,
+                    "trade_date": quote_time[:10] if quote_time else _quote_trade_date(d.get("f124")),
                 }
     except Exception as e:
         logger.error(f"Error fetching index info for {index_code}: {e}")
     return {}
 
 
-async def fetch_us_stock_change_rate(session: aiohttp.ClientSession, em_code: str) -> float:
-    """Fetch a US stock's real-time change rate using EastMoney push2 API.
-
-    EastMoney may place US/ADR symbols under 105/106/107.  F10 holdings can also
-    contain Bloomberg-like strings such as ENBCN or TTEFP; these are normalized
-    before trying quote candidates. Missing quotes are logged at DEBUG level to
-    avoid GitHub Actions warning spam for unsupported non-US holdings.
-    """
+async def fetch_us_stock_change_info(session: aiohttp.ClientSession, em_code: str) -> dict:
+    """Fetch a US stock's change rate with quote trade-date metadata."""
     raw = str(em_code or "").strip().strip(".")
     if not raw:
-        return 0.0
+        return {}
 
     prefix = ""
     symbol = raw
@@ -589,7 +622,7 @@ async def fetch_us_stock_change_rate(session: aiohttp.ClientSession, em_code: st
     symbol = normalize_possible_us_ticker(symbol)
     if not symbol:
         logger.debug("Skip unsupported foreign holding symbol for US quote: %s", raw)
-        return 0.0
+        return {}
 
     candidates: list[str] = []
     if prefix in US_MARKET_PREFIXES:
@@ -601,17 +634,39 @@ async def fetch_us_stock_change_rate(session: aiohttp.ClientSession, em_code: st
 
     try:
         for secid in candidates:
-            d = await _fetch_push2_quote(session, secid, "f43,f44,f45,f46,f57,f58,f169,f170", timeout=10, retries=2)
+            d = await _fetch_push2_quote(session, secid, "f43,f44,f45,f46,f57,f58,f169,f170,f124", timeout=10, retries=2)
             if not d:
                 continue
             change_rate = d.get("f170", 0)
             if change_rate in (None, "-"):
-                return 0.0
-            return float(change_rate) / 100.0
+                change_rate_val = 0.0
+            else:
+                change_rate_val = float(change_rate) / 100.0
+            quote_time = _format_quote_time(d.get("f124"))
+            return {
+                "em_code": secid,
+                "asset_name": d.get("f58", ""),
+                "asset_value": d.get("f43", 0),
+                "change_rate": round(change_rate_val, 4),
+                "quote_time": quote_time,
+                "trade_date": quote_time[:10] if quote_time else _quote_trade_date(d.get("f124")),
+            }
         logger.debug("No data for US stock %s; tried %s", raw, ",".join(candidates))
     except Exception as e:
         logger.warning("Error fetching US stock change for %s: %s", raw, _fmt_exc(e))
-    return 0.0
+    return {}
+
+
+async def fetch_us_stock_change_rate(session: aiohttp.ClientSession, em_code: str) -> float:
+    """Fetch a US stock's real-time change rate using EastMoney push2 API.
+
+    EastMoney may place US/ADR symbols under 105/106/107.  F10 holdings can also
+    contain Bloomberg-like strings such as ENBCN or TTEFP; these are normalized
+    before trying quote candidates. Missing quotes are logged at DEBUG level to
+    avoid GitHub Actions warning spam for unsupported non-US holdings.
+    """
+    info = await fetch_us_stock_change_info(session, em_code)
+    return float(info.get("change_rate", 0.0) or 0.0)
 
 
 async def fetch_us_index_info(session: aiohttp.ClientSession, us_index_code: str) -> dict:
@@ -629,7 +684,7 @@ async def fetch_us_index_info(session: aiohttp.ClientSession, us_index_code: str
         url = "http://push2delay.eastmoney.com/api/qt/stock/get"
         params = {
             "secid": us_index_code,
-            "fields": "f43,f44,f45,f57,f58,f169,f170"
+            "fields": "f43,f44,f45,f57,f58,f169,f170,f124"
         }
         async with session.get(url, params=params, headers=HEADERS_QUOTE, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             content_type = resp.headers.get('Content-Type', '')
@@ -675,11 +730,14 @@ async def fetch_us_index_info(session: aiohttp.ClientSession, us_index_code: str
                     else:
                         index_value = raw_value
 
+                quote_time = _format_quote_time(d.get("f124"))
                 return {
                     "index_code": us_index_code,
                     "index_name": index_name,
                     "index_value": round(index_value, 2),
                     "change_rate": round(change_rate, 2),
+                    "quote_time": quote_time,
+                    "trade_date": quote_time[:10] if quote_time else _quote_trade_date(d.get("f124")),
                 }
     except Exception as e:
         logger.error(f"Error fetching US index info for {us_index_code}: {e}")
