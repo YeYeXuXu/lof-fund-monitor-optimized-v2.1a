@@ -52,6 +52,22 @@ def _running_in_github_actions() -> bool:
     return _env_enabled("GITHUB_ACTIONS")
 
 
+def _describe_fund_data_sources(data: dict) -> str:
+    """Build a compact source summary for Actions/runtime logs."""
+    akshare_source = data.get("akshare_source") or "未命中"
+    nav_source = data.get("nav_source") or "未记录"
+    estimate_source = data.get("estimate_source") or data.get("valuation_method") or "未记录"
+    price_source = data.get("price_source") or "未记录"
+    premium_source = data.get("premium_source") or "未记录"
+    return (
+        f"AkShare={akshare_source}; "
+        f"NAV={nav_source}; "
+        f"估值={estimate_source}; "
+        f"价格={price_source}; "
+        f"折溢价={premium_source}"
+    )
+
+
 # DuckDNS dynamic DNS configuration (defaults, can be overridden via API)
 DUCKDNS_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "duckdns_config.json")
 DUCKDNS_UPDATE_INTERVAL = 180  # 3 minutes in seconds
@@ -307,9 +323,11 @@ async def _apply_valuation_model(session: aiohttp.ClientSession, fund: dict, dat
     if iopv > 0:
         data["estimated_nav"] = round(iopv, 4)
         data["source_estimated_nav"] = round(iopv, 4)
+        data["estimate_source"] = data.get("akshare_source") or "akshare.fund_etf_spot_em:f441"
         if data.get("akshare_premium_rate") is not None:
             data["premium_rate"] = round(float(data.get("akshare_premium_rate") or 0), 2)
-        data["model_version"] = "净值估值模型优化v1.6a"
+            data["premium_source"] = data.get("akshare_source") or "akshare.fund_etf_spot_em:f402"
+        data["model_version"] = "净值估值模型优化v1.7a"
         data["valuation_method"] = "akshare_fund_etf_spot_em_iopv"
         data["valuation_confidence"] = 0.9
         data["valuation_note"] = "优先使用 AkShare fund_etf_spot_em：f441=IOPV实时估值；f402=基金折价率/溢价率同一值"
@@ -327,6 +345,8 @@ async def _apply_valuation_model(session: aiohttp.ClientSession, fund: dict, dat
                 data["overseas_period"] = est[key]
             else:
                 data[key] = est[key]
+    if data.get("valuation_method"):
+        data["estimate_source"] = f"valuation_model:{data['valuation_method']}"
 
 
 async def _persist_fetched_holdings(fund_code: str, data: dict) -> None:
@@ -368,9 +388,18 @@ async def update_single_fund(fund_code: str, market: str = "sz"):
                 base_nav = data["estimated_nav"] if data["estimated_nav"] > 0 else data["nav"]
                 if base_nav > 0 and data["trade_price"] > 0:
                     data["premium_rate"] = round((data["trade_price"] - base_nav) / base_nav * 100, 2)
+                    data["premium_source"] = "calculated_from_nav_and_trade_price"
 
             await save_realtime(fund_code, data)
-            logger.info(f"Updated single fund {fund_code}: NAV={data.get('nav')}, Price={data.get('trade_price')}, Premium={data.get('premium_rate')}%, Algo={algo_type}")
+            logger.info(
+                "Updated single fund %s: NAV=%s, Price=%s, Premium=%s%%, Algo=%s, Source=[%s]",
+                fund_code,
+                data.get("nav"),
+                data.get("trade_price"),
+                data.get("premium_rate"),
+                algo_type,
+                _describe_fund_data_sources(data),
+            )
     except Exception as e:
         logger.error(f"Error updating single fund {fund_code}: {e}")
 
@@ -412,10 +441,18 @@ async def update_all_funds():
                             base_nav = data["estimated_nav"] if data["estimated_nav"] > 0 else data["nav"]
                             if base_nav > 0 and data["trade_price"] > 0:
                                 data["premium_rate"] = round((data["trade_price"] - base_nav) / base_nav * 100, 2)
+                                data["premium_source"] = "calculated_from_nav_and_trade_price"
 
                         await save_realtime(fund_code, data)
 
-                        logger.info(f"Updated fund {fund_code}: NAV={data.get('nav')}, Price={data.get('trade_price')}, Premium={data.get('premium_rate')}%")
+                        logger.info(
+                            "Updated fund %s: NAV=%s, Price=%s, Premium=%s%%, Source=[%s]",
+                            fund_code,
+                            data.get("nav"),
+                            data.get("trade_price"),
+                            data.get("premium_rate"),
+                            _describe_fund_data_sources(data),
+                        )
 
                     except Exception as e:
                         logger.error(f"Error updating fund {fund.get('fund_code')}: {e}")
@@ -452,37 +489,54 @@ async def _fetch_fund_data_with_session(
         "source_estimated_nav": 0, "source_estimated_change_rate": 0, "source_estimate_time": "",
         "model_version": "", "valuation_method": "", "valuation_confidence": 0, "valuation_note": "",
         "akshare_source": "", "akshare_premium_rate": None, "iopv_estimated_nav": 0,
+        "nav_source": "", "estimate_source": "", "price_source": "", "premium_source": "",
     }
 
     # 1) Prefer AkShare release methods for quote/IOPV/valuation information.
-    apply_akshare_fund_data_to_result(result, fund_code, akshare_snapshot)
+    akshare_used = apply_akshare_fund_data_to_result(result, fund_code, akshare_snapshot)
+    if akshare_used:
+        akshare_source = result.get("akshare_source") or "akshare"
+        if result.get("nav", 0) > 0:
+            result["nav_source"] = akshare_source
+        if result.get("source_estimated_nav", 0) > 0:
+            result["estimate_source"] = akshare_source
+        if result.get("trade_price", 0) > 0:
+            result["price_source"] = akshare_source
+        if result.get("akshare_premium_rate") is not None:
+            result["premium_source"] = akshare_source
 
     # 2) Existing NAV/estimate fallback if AkShare did not provide enough data.
     if result.get("nav", 0) <= 0 or result.get("source_estimated_nav", 0) <= 0:
         est_data = await fetch_fund_estimate(session, fund_code)
         if est_data:
+            estimate_source = est_data.get("estimate_source", "original.fundgz")
             if result.get("nav", 0) <= 0:
                 result["nav"] = est_data.get("nav", 0)
                 result["nav_date"] = est_data.get("nav_date", "")
+                result["nav_source"] = estimate_source
             if result.get("source_estimated_nav", 0) <= 0:
                 result["estimated_nav"] = est_data.get("estimated_nav", 0)
                 result["estimated_change_rate"] = est_data.get("estimated_change_rate", 0)
                 result["source_estimated_nav"] = est_data.get("estimated_nav", 0)
                 result["source_estimated_change_rate"] = est_data.get("estimated_change_rate", 0)
                 result["source_estimate_time"] = est_data.get("estimate_time", "")
+                result["estimate_source"] = estimate_source
         elif result.get("nav", 0) <= 0:
             # Fallback for QDII/overseas funds: fundgz.1234567.com.cn doesn't cover
             # these funds, so we fetch NAV from eastmoney's F10 historical NAV page.
             nav_data = await fetch_fund_nav_from_lsjz(session, fund_code)
             if nav_data:
+                nav_source = nav_data.get("nav_source", "original.eastmoney.f10_lsjz")
                 result["nav"] = nav_data.get("nav", 0)
                 result["nav_date"] = nav_data.get("nav_date", "")
+                result["nav_source"] = nav_source
                 if result.get("source_estimated_nav", 0) <= 0:
                     result["estimated_nav"] = nav_data.get("nav", 0)
                     result["estimated_change_rate"] = nav_data.get("daily_change_rate", 0)
                     result["source_estimated_nav"] = nav_data.get("nav", 0)
                     result["source_estimated_change_rate"] = nav_data.get("daily_change_rate", 0)
                     result["source_estimate_time"] = nav_data.get("nav_date", "")
+                    result["estimate_source"] = nav_source
 
     # 3) Existing quote fallback if AkShare spot did not provide price/amount.
     if result.get("trade_price", 0) <= 0:
@@ -491,6 +545,7 @@ async def _fetch_fund_data_with_session(
             result["trade_price"] = price_data.get("trade_price", 0)
             result["trade_price_change"] = price_data.get("trade_price_change", 0)
             result["trade_amount"] = price_data.get("amount", 0)
+            result["price_source"] = "original.eastmoney.push2delay.stock.get"
 
     # 4) Holdings are expensive and change slowly.  Use cached rows first during
     # regular quote refreshes; the dedicated daily/manual holdings refresh still
@@ -556,6 +611,7 @@ async def _fetch_fund_data_with_session(
         base_nav = result["estimated_nav"] if result["estimated_nav"] > 0 else result["nav"]
         if base_nav > 0 and result["trade_price"] > 0:
             result["premium_rate"] = round((result["trade_price"] - base_nav) / base_nav * 100, 2)
+            result["premium_source"] = "calculated_from_nav_and_trade_price"
 
     return result
 
@@ -935,6 +991,35 @@ def _build_wechat_push_key(day: str, scheduled_time: str) -> str:
     return f"wechat_threshold_alert:{day}:{scheduled_time}"
 
 
+def _wechat_push_grace_seconds() -> int:
+    """Allow a short retry window so startup/data refresh cannot miss a push slot."""
+    try:
+        return max(60, int(os.environ.get("WECHAT_PUSH_GRACE_SECONDS", "90") or 90))
+    except ValueError:
+        return 90
+
+
+def _match_due_push_slot(now: datetime, scheduled_times: list[str]) -> tuple[str, str]:
+    """Return (scheduled_date, HH:MM) when now is inside a scheduled slot window."""
+    grace_seconds = _wechat_push_grace_seconds()
+    best: tuple[datetime, str] | None = None
+    for item in scheduled_times:
+        try:
+            hour, minute = [int(x) for x in item.split(":", 1)]
+        except ValueError:
+            continue
+        scheduled_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if scheduled_at > now:
+            scheduled_at -= timedelta(days=1)
+        elapsed = (now - scheduled_at).total_seconds()
+        if 0 <= elapsed <= grace_seconds:
+            if best is None or scheduled_at > best[0]:
+                best = (scheduled_at, item)
+    if best:
+        return best[0].strftime("%Y-%m-%d"), best[1]
+    return "", ""
+
+
 def _normalize_wechat_config(config: dict) -> tuple[dict, str]:
     """Normalize and validate WeChat config from the API.
 
@@ -1043,7 +1128,7 @@ def _format_push_percent(value: float) -> str:
 
 
 def _build_threshold_alert_title(values: dict, conditions: list) -> str:
-    """Build the only scheduled WeChat push title for v1.6a.
+    """Build the only scheduled WeChat push title for v1.7a.
 
     Example: LOF折溢价告警 溢价3% 成交60万
     """
@@ -1066,10 +1151,12 @@ async def check_threshold_alerts(config: dict = None) -> dict:
         send_keys = parse_send_keys(send_key)
         values = _wechat_filter_values(config)
         if not send_keys or not (values["premium_enabled"] or values["discount_enabled"]):
+            logger.info("WeChat alert skipped: send_keys=%s threshold_enabled=%s", len(send_keys), values["premium_enabled"] or values["discount_enabled"])
             return {"success": False, "sent": False, "msg": "告警未启用或 SendKey 未配置", "count": 0}
 
         funds = await get_all_realtime()
         if not funds:
+            logger.warning("WeChat alert skipped: realtime fund data is empty")
             return {"success": False, "sent": False, "msg": "暂无基金数据", "count": 0}
 
         # Scheduled WeChat filtering uses AkShare release spot fields first.
@@ -1078,13 +1165,24 @@ async def check_threshold_alerts(config: dict = None) -> dict:
         try:
             async with aiohttp.ClientSession() as session:
                 akshare_snapshot = await get_akshare_fund_snapshot(session, max_age_seconds=60)
+            logger.info(
+                "WeChat alert source overlay: AkShare spot=%s estimation=%s fetched_at=%s; stored_realtime=%s funds",
+                len(akshare_snapshot.get("spot") or {}),
+                len(akshare_snapshot.get("estimation") or {}),
+                akshare_snapshot.get("fetched_at", ""),
+                len(funds),
+            )
             funds = overlay_akshare_realtime_for_funds(funds, akshare_snapshot)
         except Exception as exc:
-            logger.debug("AkShare overlay for WeChat filters failed, using stored realtime data: %s", exc)
+            logger.warning("AkShare overlay for WeChat filters failed, using stored realtime data: %s", exc)
 
         alerts, conditions = _collect_threshold_alerts(funds, config)
         if not alerts:
-            logger.info("Alert push skipped: no funds meet configured threshold filters")
+            logger.info(
+                "Alert push skipped: no funds meet configured threshold filters (%s); checked=%s funds",
+                _describe_wechat_filters(config),
+                len(funds),
+            )
             return {"success": True, "sent": False, "msg": "没有基金满足告警筛选条件", "count": 0}
 
         enabled_conditions = []
@@ -1093,7 +1191,7 @@ async def check_threshold_alerts(config: dict = None) -> dict:
         if values["discount_enabled"]:
             enabled_conditions.append("discount_lower")
 
-        # v1.6a: automatic WeChat push sends exactly one threshold-alert message
+        # v1.7a: automatic WeChat push sends exactly one threshold-alert message
         # with a compact title such as "LOF折溢价告警 溢价3% 折价-5% 成交60万".
         title = _build_threshold_alert_title(values, enabled_conditions)
         content = build_threshold_alert_message(
@@ -1119,7 +1217,7 @@ async def check_threshold_alerts(config: dict = None) -> dict:
 
 
 async def periodic_wechat_push():
-    """Automatic WeChat alert task for v1.6a.
+    """Automatic WeChat alert task for v1.7a.
 
     Strict rules:
     1. Only the configured push_time values are allowed to trigger a push.
@@ -1130,6 +1228,7 @@ async def periodic_wechat_push():
     4. Data refresh remains independent and unchanged.
     """
 
+    last_config_log = ""
     while not shutdown_event.is_set():
         sleep_seconds = 30
         try:
@@ -1139,6 +1238,14 @@ async def periodic_wechat_push():
             scheduled_alert_enabled = _as_enabled(config.get("push_enabled", 0))
             alert_enabled = _as_enabled(config.get("premium_alert_enabled", 0)) or _as_enabled(config.get("discount_alert_enabled", 1))
             scheduled_times = _parse_push_times(config.get("push_time", ""))
+            config_log = (
+                f"enabled={scheduled_alert_enabled and alert_enabled and bool(send_keys)}; "
+                f"recipients={len(send_keys)}; times={','.join(scheduled_times) or 'none'}; "
+                f"filters={_describe_wechat_filters(config)}"
+            )
+            if config_log != last_config_log:
+                logger.info("WeChat scheduler config: %s", config_log)
+                last_config_log = config_log
 
             if not send_keys or not scheduled_alert_enabled or not alert_enabled:
                 sleep_seconds = 30
@@ -1148,32 +1255,53 @@ async def periodic_wechat_push():
                 sleep_seconds = 30
             else:
                 now = datetime.now(CST)
-                current_time_str = now.strftime("%H:%M")
-                current_date_str = now.strftime("%Y-%m-%d")
-
-                # No fuzzy window: if current HH:MM is not configured, do not push.
-                matched_time = current_time_str if current_time_str in scheduled_times else None
+                scheduled_date, matched_time = _match_due_push_slot(now, scheduled_times)
                 if matched_time:
-                    push_key = _build_wechat_push_key(current_date_str, matched_time)
-                    claimed = await claim_wechat_push_slot(push_key, current_date_str, matched_time)
-                    if claimed:
-                        result = await check_threshold_alerts(config=config)
-                        if result.get("sent"):
-                            status = "sent"
-                        elif result.get("success"):
-                            status = "skipped"
-                        else:
-                            status = "failed"
-                        await mark_wechat_push_slot(
+                    push_key = _build_wechat_push_key(scheduled_date, matched_time)
+                    logger.info(
+                        "WeChat alert due: scheduled=%s %s, now=%s, recipients=%s, filters=%s",
+                        scheduled_date,
+                        matched_time,
+                        now.strftime("%Y-%m-%d %H:%M:%S"),
+                        len(send_keys),
+                        _describe_wechat_filters(config),
+                    )
+                    if update_lock.locked():
+                        logger.info(
+                            "WeChat alert due but fund data update is still running; "
+                            "retrying before claiming slot %s",
                             push_key,
-                            status,
-                            result.get("count", 0),
-                            result.get("msg", ""),
                         )
+                        sleep_seconds = 5
                     else:
-                        logger.info("WeChat alert push skipped: %s already executed", push_key)
+                        claimed = await claim_wechat_push_slot(push_key, scheduled_date, matched_time)
+                        if claimed:
+                            result = await check_threshold_alerts(config=config)
+                            if result.get("sent"):
+                                status = "sent"
+                            elif result.get("success"):
+                                status = "skipped"
+                            else:
+                                status = "failed"
+                            await mark_wechat_push_slot(
+                                push_key,
+                                status,
+                                result.get("count", 0),
+                                result.get("msg", ""),
+                            )
+                            logger.info(
+                                "WeChat alert slot finished: %s status=%s count=%s msg=%s",
+                                push_key,
+                                status,
+                                result.get("count", 0),
+                                result.get("msg", ""),
+                            )
+                        else:
+                            logger.info("WeChat alert push skipped: %s already executed", push_key)
+                        sleep_seconds = _seconds_until_next_push_time(now, scheduled_times)
 
-                sleep_seconds = _seconds_until_next_push_time(now, scheduled_times)
+                else:
+                    sleep_seconds = _seconds_until_next_push_time(now, scheduled_times)
 
         except Exception as e:
             logger.error(f"Error in periodic WeChat alert push: {e}")
@@ -1541,13 +1669,13 @@ async def api_save_wechat_config(request):
 
 
 async def api_test_wechat_push(request):
-    """v1.6a keeps this route as a no-op so no extra WeChat messages are sent."""
-    return web.json_response({"code": -1, "msg": "v1.6a 已取消测试推送；微信只在设置时间发送 1 条 LOF折溢价告警"})
+    """v1.7a keeps this route as a no-op so no extra WeChat messages are sent."""
+    return web.json_response({"code": -1, "msg": "v1.7a 已取消测试推送；微信只在设置时间发送 1 条 LOF折溢价告警"})
 
 
 async def api_send_summary_now(request):
-    """v1.6a removes summary pushes; keep this route as a safe no-op for compatibility."""
-    return web.json_response({"code": -1, "msg": "v1.6a 已取消汇总推送；自动微信推送只在设置时间发送 1 条 LOF折溢价告警"})
+    """v1.7a removes summary pushes; keep this route as a safe no-op for compatibility."""
+    return web.json_response({"code": -1, "msg": "v1.7a 已取消汇总推送；自动微信推送只在设置时间发送 1 条 LOF折溢价告警"})
 
 
 # ============ Static File Serving ============

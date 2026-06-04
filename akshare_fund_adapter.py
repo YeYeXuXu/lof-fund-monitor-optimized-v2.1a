@@ -32,24 +32,34 @@ logger = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
 AKSHARE_CACHE_TTL_SECONDS = max(15, int(os.environ.get("AKSHARE_FUND_CACHE_TTL", "60") or 60))
 AKSHARE_HTTP_TIMEOUT = max(3, int(os.environ.get("AKSHARE_FUND_HTTP_TIMEOUT", "8") or 8))
+AKSHARE_HTTP_RETRIES = max(1, int(os.environ.get("AKSHARE_FUND_HTTP_RETRIES", "3") or 3))
+AKSHARE_RETRY_SLEEP_SECONDS = max(0.1, float(os.environ.get("AKSHARE_FUND_RETRY_SLEEP", "0.6") or 0.6))
 AKSHARE_PAGE_SIZE = max(100, int(os.environ.get("AKSHARE_FUND_PAGE_SIZE", "5000") or 5000))
 
 HEADERS_QUOTE = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json,text/plain,*/*",
     "Referer": "https://quote.eastmoney.com/",
+    "Connection": "close",
 }
 
 HEADERS_FUND = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
     "Referer": "https://fund.eastmoney.com/",
+    "Connection": "close",
 }
 
 _ETF_SPOT_URLS = (
+    "https://push2.eastmoney.com/api/qt/clist/get",
     "https://push2delay.eastmoney.com/api/qt/clist/get",
     "https://88.push2.eastmoney.com/api/qt/clist/get",
+    "https://2.push2.eastmoney.com/api/qt/clist/get",
 )
 
 _LOF_SPOT_URLS = (
+    "https://push2.eastmoney.com/api/qt/clist/get",
+    "https://push2delay.eastmoney.com/api/qt/clist/get",
     "https://88.push2.eastmoney.com/api/qt/clist/get",
     "https://2.push2.eastmoney.com/api/qt/clist/get",
 )
@@ -193,15 +203,40 @@ async def _request_json(
     headers: dict[str, str],
     timeout: int = AKSHARE_HTTP_TIMEOUT,
 ) -> dict[str, Any]:
-    async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-        text = await resp.text()
-        if not text:
-            return {}
+    last_error = ""
+    for attempt in range(1, AKSHARE_HTTP_RETRIES + 1):
         try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            logger.debug("AkShare adapter non-JSON response: %s %s", resp.status, text[:160])
-            return {}
+            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    last_error = f"HTTP {resp.status}: {text[:120]}"
+                    raise aiohttp.ClientResponseError(
+                        resp.request_info,
+                        resp.history,
+                        status=resp.status,
+                        message=text[:120],
+                        headers=resp.headers,
+                    )
+                if not text:
+                    last_error = "empty response"
+                    raise ValueError(last_error)
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError as exc:
+                    last_error = f"JSONDecodeError: {text[:160]}"
+                    raise exc
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt < AKSHARE_HTTP_RETRIES:
+                await asyncio.sleep(AKSHARE_RETRY_SLEEP_SECONDS * attempt)
+                continue
+            logger.debug(
+                "AkShare adapter request failed after %s attempts: url=%s error=%s",
+                AKSHARE_HTTP_RETRIES,
+                url,
+                last_error,
+            )
+    raise RuntimeError(last_error or "empty response")
 
 
 async def _fetch_clist_rows(
@@ -230,6 +265,7 @@ async def _fetch_clist_rows(
 
             total = int(_to_float(data.get("total"), len(rows)) or len(rows))
             if total <= len(rows):
+                logger.info("AkShare adapter %s fetched %s rows via %s", source_name, len(rows), url)
                 return rows
 
             per_page = max(1, len(rows))
@@ -250,6 +286,7 @@ async def _fetch_clist_rows(
             page_results = await asyncio.gather(*(fetch_page(page_no) for page_no in range(2, total_pages + 1)))
             for page_rows in page_results:
                 rows.extend(page_rows)
+            logger.info("AkShare adapter %s fetched %s/%s rows via %s", source_name, len(rows), total, url)
             return rows
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"

@@ -129,6 +129,11 @@ async def main() -> None:
     await site.start()
     print(f"[OK] LOF 监控服务已在 GitHub Actions 启动: http://127.0.0.1:{port}")
     print("[INFO] GitHub 托管 runner 不开放公网入站端口；此地址只在 runner 内部可访问。")
+    push_times = sorted(_configured_push_times())
+    if push_times:
+        print(f"[INFO] 今日微信告警检查时间: {', '.join(push_times)}；服务日志会输出每只基金的 Source=[AkShare/原有接口]。", flush=True)
+    else:
+        print("[INFO] 未读取到 WECHAT_PUSH_TIME；若已在 SQLite 配置推送时间，请以服务日志中的 WeChat scheduler config 为准。", flush=True)
 
     try:
         reason = await _wait_until(deadline, stop_event)

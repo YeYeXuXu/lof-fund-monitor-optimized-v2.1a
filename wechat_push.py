@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 CST = timezone(timedelta(hours=8))
 SERVERCHAN_URL = "https://sctapi.ftqq.com"
-MODEL_VERSION_TEXT = "净值估值模型优化v1.6a"
+MODEL_VERSION_TEXT = "净值估值模型优化v1.7a"
 
 STATUS_ICON = {
     "开放": "✅",

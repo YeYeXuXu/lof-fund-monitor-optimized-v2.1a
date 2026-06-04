@@ -117,6 +117,7 @@ async def main() -> None:
     print(f"[OK] 已导入/保留基金数量: {len(funds)}")
     print(f"[OK] 微信告警: {'已启用' if config['push_enabled'] and send_keys else '未启用或缺少 SendKey'}；接收方 {len(send_keys)} 个")
     print(f"[OK] 告警检查时间: {config['push_time']}")
+    print("[OK] 数据源策略: AkShare 批量快照优先，缺失字段自动回退原有接口；每只基金更新日志会打印 Source=[...]。")
     print(
         "[OK] 阈值: "
         f"溢价 >= {config['premium_upper']}%, "

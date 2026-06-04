@@ -805,6 +805,7 @@ async def _fetch_fund_nav_from_pingzhongdata(session: aiohttp.ClientSession, fun
                 "nav": nav,
                 "nav_date": nav_date,
                 "daily_change_rate": daily_change_rate,
+                "nav_source": "original.eastmoney.pingzhongdata",
             }
     except Exception as e:
         logger.debug("pingzhongdata NAV fallback failed for %s: %s", fund_code, _fmt_exc(e))
@@ -860,6 +861,7 @@ async def fetch_fund_nav_from_lsjz(session: aiohttp.ClientSession, fund_code: st
                                 "nav": nav,
                                 "nav_date": nav_date,
                                 "daily_change_rate": daily_change_rate,
+                                "nav_source": "original.eastmoney.f10_lsjz",
                             }
                 last_error = "lsjz table missing"
         except Exception as e:
