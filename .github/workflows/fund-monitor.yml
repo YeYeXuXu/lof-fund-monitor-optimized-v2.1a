@@ -1,4 +1,4 @@
-name: LOF Fund Monitor v1.8a 09:30-15:00 CST
+name: LOF Fund Monitor v1.9a 09:30-15:00 CST
 
 on:
   schedule:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   monitor:
-    name: Run LOF monitor v1.8a until 15:00 CST
+    name: Run LOF monitor v1.9a until 15:00 CST
     runs-on: ubuntu-latest
     timeout-minutes: 340
 
@@ -44,6 +44,9 @@ jobs:
       AKSHARE_FUND_HTTP_TIMEOUT: ${{ vars.AKSHARE_FUND_HTTP_TIMEOUT }}
       AKSHARE_FUND_HTTP_RETRIES: ${{ vars.AKSHARE_FUND_HTTP_RETRIES }}
       AKSHARE_FUND_RETRY_SLEEP: ${{ vars.AKSHARE_FUND_RETRY_SLEEP }}
+      AKSHARE_FUND_ESTIMATION_TIMEOUT: ${{ vars.AKSHARE_FUND_ESTIMATION_TIMEOUT }}
+      AKSHARE_FUND_ESTIMATION_SYMBOLS: ${{ vars.AKSHARE_FUND_ESTIMATION_SYMBOLS }}
+      WECHAT_AKSHARE_OVERLAY_TIMEOUT: ${{ vars.WECHAT_AKSHARE_OVERLAY_TIMEOUT }}
       RUN_UNTIL: ${{ inputs.run_until || '15:00' }}
 
     steps:
