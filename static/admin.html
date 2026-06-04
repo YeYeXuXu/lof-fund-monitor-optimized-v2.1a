@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LOF基金监控 - 后台管理</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            background: #171412;
+            color: #ede4d8;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #231d18 0%, #12100d 100%);
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #3d3028;
+        }
+        .header h1 {
+            font-size: 22px;
+            color: #d4956a;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .btn {
+            padding: 8px 18px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .btn-back {
+            background: transparent;
+            color: #d4956a;
+            border: 1px solid #d4956a;
+        }
+        .btn-back:hover { background: rgba(212, 149, 106, 0.1); }
+
+        .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+
+        .section {
+            background: #1e1914;
+            border-radius: 12px;
+            border: 1px solid #3d3028;
+            margin-bottom: 24px;
+            overflow: hidden;
+        }
+        .section-header {
+            background: #28221b;
+            padding: 16px 20px;
+            border-bottom: 1px solid #3d3028;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .section-header h2 {
+            font-size: 16px;
+            color: #ede4d8;
+        }
+        .section-body { padding: 20px; }
+
+        .form-group {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        .form-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .form-field label {
+            font-size: 12px;
+            color: #a89a8c;
+            font-weight: 500;
+        }
+        .form-field input, .form-field select, .form-field textarea {
+            background: #12100d;
+            border: 1px solid #3d3028;
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: #ede4d8;
+            font-size: 14px;
+            min-width: 140px;
+        }
+        .form-field textarea {
+            min-width: 300px;
+            min-height: 80px;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 12px;
+            resize: vertical;
+        }
+        .form-field input:focus, .form-field select:focus, .form-field textarea:focus {
+            outline: none;
+            border-color: #d4956a;
+        }
+        .form-field input::placeholder { color: #6d5f53; }
+
+        .btn-add {
+            background: #b87a45;
+            color: #fff;
+            padding: 8px 20px;
+            white-space: nowrap;
+        }
+        .btn-add:hover { background: #c98a52; }
+        .btn-add:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-sm {
+            padding: 5px 12px;
+            font-size: 12px;
+            border-radius: 4px;
+        }
+        .btn-edit { background: rgba(212, 149, 106, 0.15); color: #d4956a; border: 1px solid rgba(212, 149, 106, 0.3); }
+        .btn-edit:hover { background: rgba(212, 149, 106, 0.25); }
+        .btn-delete { background: rgba(232, 101, 74, 0.15); color: #e8654a; border: 1px solid rgba(232, 101, 74, 0.3); }
+        .btn-delete:hover { background: rgba(232, 101, 74, 0.25); }
+        .btn-fetch { background: rgba(93, 170, 82, 0.15); color: #5daa52; border: 1px solid rgba(93, 170, 82, 0.3); }
+        .btn-fetch:hover { background: rgba(93, 170, 82, 0.25); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        thead th {
+            background: #28221b;
+            padding: 12px 14px;
+            text-align: left;
+            font-size: 12px;
+            font-weight: 600;
+            color: #a89a8c;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #3d3028;
+        }
+        tbody tr {
+            border-bottom: 1px solid rgba(61, 48, 40, 0.3);
+        }
+        tbody tr:hover { background: rgba(212, 149, 106, 0.03); }
+        tbody td {
+            padding: 12px 14px;
+            font-size: 14px;
+        }
+
+        .fund-code {
+            font-weight: 700;
+            color: #d4956a;
+            font-family: "SFMono-Regular", Consolas, monospace;
+        }
+        .algo-tag {
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .algo-holdings { background: rgba(212, 149, 106, 0.15); color: #d4956a; }
+        .algo-industry { background: rgba(212, 160, 86, 0.15); color: #d4a056; }
+        .algo-overseas { background: rgba(184, 122, 138, 0.15); color: #b87a8a; }
+        .cat-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .cat-domestic { background: rgba(212, 149, 106, 0.12); color: #d4956a; }
+        .cat-hk { background: rgba(212, 160, 86, 0.12); color: #d4a056; }
+        .cat-overseas { background: rgba(184, 122, 138, 0.12); color: #b87a8a; }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #6d5f53;
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.show { display: flex; }
+        .modal {
+            background: #28221b;
+            border-radius: 12px;
+            border: 1px solid #3d3028;
+            width: 600px;
+            max-width: 90vw;
+            max-height: 85vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #3d3028;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h3 { color: #d4956a; font-size: 16px; }
+        .modal-close {
+            background: none;
+            border: none;
+            color: #a89a8c;
+            font-size: 20px;
+            cursor: pointer;
+        }
+        .modal-close:hover { color: #ede4d8; }
+        .modal-body { padding: 20px; }
+        .modal-body .form-field { margin-bottom: 16px; }
+        .modal-body .form-field input,
+        .modal-body .form-field select,
+        .modal-body .form-field textarea {
+            width: 100%;
+        }
+        .modal-footer {
+            padding: 16px 20px;
+            border-top: 1px solid #3d3028;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        .btn-cancel {
+            background: transparent;
+            color: #a89a8c;
+            border: 1px solid #6d5f53;
+        }
+        .btn-cancel:hover { background: rgba(109, 95, 83, 0.2); }
+        .btn-save {
+            background: #b87a45;
+            color: #fff;
+        }
+        .btn-save:hover { background: #c98a52; }
+
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 2000;
+            display: none;
+            animation: slideIn 0.3s ease;
+        }
+        .toast.success { background: rgba(93, 170, 82, 0.9); color: #fff; }
+        .toast.error { background: rgba(232, 101, 74, 0.9); color: #fff; }
+        .toast.show { display: block; }
+        @keyframes slideIn {
+            from { transform: translateX(100px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .algo-config {
+            display: none;
+            margin-top: 12px;
+            padding: 14px;
+            background: #12100d;
+            border-radius: 6px;
+            border: 1px solid #3d3028;
+        }
+        .algo-config.show { display: block; }
+        .algo-config .hint {
+            font-size: 12px;
+            color: #6d5f53;
+            margin-top: 6px;
+        }
+
+        /* Quick index/futures selector */
+        .quick-select {
+            margin-top: 8px;
+        }
+        .quick-select-title {
+            font-size: 12px;
+            color: #a89a8c;
+            margin-bottom: 6px;
+        }
+        .chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .chip {
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            background: #1e1914;
+            color: #a89a8c;
+            border: 1px solid #3d3028;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .chip:hover {
+            background: rgba(212, 149, 106, 0.15);
+            color: #d4956a;
+            border-color: rgba(212, 149, 106, 0.3);
+        }
+        .chip.active {
+            background: rgba(212, 149, 106, 0.2);
+            color: #d4956a;
+            border-color: #d4956a;
+        }
+        .chip.active-purple {
+            background: rgba(184, 122, 138, 0.2);
+            color: #b87a8a;
+            border-color: #b87a8a;
+        }
+
+        /* Index display in fund list */
+        .index-display {
+            font-size: 12px;
+        }
+        .index-display .index-name {
+            color: #d4a056;
+            font-weight: 500;
+        }
+        .index-display .us-index-name {
+            color: #b87a8a;
+            font-weight: 500;
+        }
+        .index-display .index-code {
+            color: #6d5f53;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 11px;
+        }
+
+        /* Overseas holdings panel */
+        .overseas-holdings-section {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #3d3028;
+        }
+        .overseas-holdings-section h4 {
+            font-size: 14px;
+            color: #b87a8a;
+            margin-bottom: 10px;
+        }
+        .holdings-actions {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .holdings-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .holdings-list table {
+            font-size: 13px;
+        }
+        .holdings-list td, .holdings-list th {
+            padding: 8px 10px;
+        }
+
+        /* ===== Mobile responsive ===== */
+        @media (max-width: 768px) {
+            .header {
+                padding: 12px 16px;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            .header h1 { font-size: 18px; }
+            .container { padding: 12px; }
+            .form-group {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 8px;
+            }
+            .form-field { width: 100%; }
+            .form-field input, .form-field select {
+                min-width: unset;
+                width: 100%;
+            }
+            .form-field textarea {
+                min-width: unset;
+                width: 100%;
+            }
+            .btn-add { width: 100%; }
+            .section-body { padding: 12px; }
+            /* Make table scrollable */
+            .section-body.no-padding-mobile {
+                padding: 0;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            table { font-size: 12px; }
+            thead th { padding: 8px 6px; font-size: 11px; }
+            tbody td { padding: 8px 6px; font-size: 12px; }
+            .modal { width: 95vw; max-height: 90vh; }
+            .chips { gap: 4px; }
+            .chip { padding: 3px 8px; font-size: 11px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚙️ 后台管理</h1>
+        <div style="display:flex;gap:10px;align-items:center">
+            <button class="btn btn-fetch" onclick="refreshAllHoldings()">📡 刷新所有持仓</button>
+            <button class="btn btn-edit" onclick="openDuckDnsModal()">🌐 动态域名</button>
+            <button class="btn btn-back" onclick="location.href='/'">📊 返回监控页</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Add Fund Section -->
+        <div class="section">
+            <div class="section-header">
+                <h2>➕ 添加基金</h2>
+            </div>
+            <div class="section-body">
+                <div class="form-group">
+                    <div class="form-field">
+                        <label>基金代码</label>
+                        <input type="text" id="fundCode" placeholder="如：161725" maxlength="6">
+                    </div>
+                    <div class="form-field">
+                        <label>交易所</label>
+                        <select id="fundMarket">
+                            <option value="sz">深交所</option>
+                            <option value="sh">上交所</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label>估算算法</label>
+                        <select id="fundAlgo" onchange="toggleAlgoConfig()">
+                            <option value="holdings">持仓+残差代理估算法</option>
+                            <option value="industry">指数/行业代理估算法</option>
+                            <option value="overseas">境外持仓+代理估算法</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label>分类</label>
+                        <select id="fundCategory">
+                            <option value="domestic">国内LOF</option>
+                            <option value="hk">港股LOF</option>
+                            <option value="overseas">境外美股LOF</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-add" id="addBtn" onclick="addFund()">添加基金</button>
+                </div>
+
+                <!-- Industry index config -->
+                <div class="algo-config" id="industryConfig">
+                    <div class="form-field">
+                        <label>行业指数代码</label>
+                        <input type="text" id="indexCode" placeholder="如：0.399997（中证白酒指数）">
+                        <p class="hint">输入东方财富格式的行业指数代码</p>
+                    </div>
+                    <div class="quick-select">
+                        <div class="quick-select-title">常用A股指数：</div>
+                        <div class="chips" id="indexChips">
+                            <span class="chip" onclick="selectChip('indexCode', '0.399997', this)">中证白酒</span>
+                            <span class="chip" onclick="selectChip('indexCode', '1.000001', this)">上证指数</span>
+                            <span class="chip" onclick="selectChip('indexCode', '0.399001', this)">深证成指</span>
+                            <span class="chip" onclick="selectChip('indexCode', '0.399006', this)">创业板指</span>
+                            <span class="chip" onclick="selectChip('indexCode', '1.000016', this)">上证50</span>
+                            <span class="chip" onclick="selectChip('indexCode', '0.399905', this)">中证500</span>
+                            <span class="chip" onclick="selectChip('indexCode', '1.000300', this)">沪深300</span>
+                            <span class="chip" onclick="selectChip('indexCode', '0.399989', this)">中证医疗</span>
+                            <span class="chip" onclick="selectChip('indexCode', '100.HSCEI', this)">恒生国企</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Overseas config -->
+                <div class="algo-config" id="overseasConfig">
+                    <div class="form-field">
+                        <label>境外指数/ETF/商品代码</label>
+                        <input type="text" id="usIndexCode" placeholder="如：100.NDX（纳斯达克100）">
+                        <p class="hint">用于时段1&2的期货估算和时段3的指数实时涨跌。东方财富格式，如 100.NDX</p>
+                    </div>
+                    <div class="quick-select">
+                        <div class="quick-select-title">常用境外代理：</div>
+                        <div class="chips" id="usIndexChips">
+                            <span class="chip" onclick="selectChip('usIndexCode', '100.NDX', this)">纳斯达克100</span>
+                            <span class="chip" onclick="selectChip('usIndexCode', '100.DJIA', this)">道琼斯</span>
+                            <span class="chip" onclick="selectChip('usIndexCode', '100.SPX', this)">标普500</span>
+                            <span class="chip" onclick="selectChip('usIndexCode', '100.IXIC', this)">纳斯达克综合</span>
+                            <span class="chip" onclick="selectChip('usIndexCode', '100.HSCEI', this)">恒生国企</span>
+                            <span class="chip" onclick="selectChip('usIndexCode', '101.GC00Y', this)">COMEX黄金</span>
+                            <span class="chip" onclick="selectChip('usIndexCode', '102.CL00Y', this)">NYMEX原油</span>
+                            <span class="chip" onclick="selectChip('usIndexCode', '101.SI00Y', this)">COMEX白银</span>
+                            <span class="chip" onclick="selectChip('usIndexCode', '105.NFTY', this)">印度NIFTY</span>
+                        </div>
+                    </div>
+                    <div class="overseas-holdings-section">
+                        <h4>🇺🇸 美股持仓</h4>
+                        <p class="hint" style="margin-bottom:8px">添加基金后可在基金列表中导入美股持仓，也可在此手动输入（JSON格式）</p>
+                        <div class="form-field">
+                            <label>手动输入美股持仓（可选）</label>
+                            <textarea id="overseasHoldingsInput" placeholder='[{"stock_code":"AAPL","stock_name":"苹果","holding_ratio":8.5,"em_code":"105.AAPL"},{"stock_code":"MSFT","stock_name":"微软","holding_ratio":7.2,"em_code":"105.MSFT"}]'></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Fund List Section -->
+        <div class="section">
+            <div class="section-header">
+                <h2>📋 已监控基金</h2>
+                <button class="btn btn-sm btn-edit" onclick="loadFunds()">🔄 刷新</button>
+            </div>
+            <div class="section-body" style="padding:0">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>基金代码</th>
+                            <th>基金名称</th>
+                            <th>交易所</th>
+                            <th>分类</th>
+                            <th>估算算法</th>
+                            <th>绑定指数/期货</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fundListBody">
+                        <tr><td colspan="7"><div class="empty-state">加载中...</div></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Algo Config Section -->
+        <div class="section">
+            <div class="section-header">
+                <h2>🔧 估算算法说明</h2>
+            </div>
+            <div class="section-body">
+                <div id="algoList">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- DuckDNS Modal -->
+    <div class="modal-overlay" id="duckdnsModal">
+        <div class="modal" style="width:520px">
+            <div class="modal-header">
+                <h3>🌐 动态域名配置</h3>
+                <button class="modal-close" onclick="closeDuckDnsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div style="background:#12100d;border-radius:6px;padding:14px;margin-bottom:16px;border:1px solid #3d3028">
+                    <p style="font-size:13px;color:#a89a8c;margin-bottom:8px">系统每3分钟自动检测公网IP并更新DuckDNS记录。优先使用IPv6，无IPv6时使用公网IPv4。</p>
+                    <div style="display:flex;gap:12px;font-size:12px;color:#6d5f53;flex-wrap:wrap">
+                        <span>公网IPv4: <span id="duckdnsCurrentIpv4" style="color:#d4a056;font-family:monospace">--</span></span>
+                        <span>IPv6: <span id="duckdnsCurrentIpv6" style="color:#d4a056;font-family:monospace">--</span></span>
+                        <span>域名: <span id="duckdnsFullDomain" style="color:#d4956a;font-family:monospace">--</span></span>
+                    </div>
+                </div>
+                <div class="form-field">
+                    <label>DuckDNS 子域名</label>
+                    <input type="text" id="duckdnsDomain" placeholder="如：mylof（不含 .duckdns.org）">
+                    <p class="hint">只需填写子域名部分，如 mylof，完整域名为 mylof.duckdns.org</p>
+                </div>
+                <div class="form-field">
+                    <label>DuckDNS Token</label>
+                    <input type="text" id="duckdnsToken" placeholder="如：ae3b49b7-1637-41b2-83ed-df45342b194f" style="font-family:monospace;font-size:13px">
+                    <p class="hint">在 <a href="https://www.duckdns.org/" target="_blank" style="color:#d4956a">duckdns.org</a> 登录后可查看你的Token</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-cancel" onclick="closeDuckDnsModal()">取消</button>
+                <button class="btn btn-fetch" id="duckdnsUpdateBtn" onclick="updateDuckDnsNow()" style="display:inline-flex;align-items:center;gap:4px">🔄 立即更新</button>
+                <button class="btn btn-save" onclick="saveDuckDnsConfig()">保存配置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div class="modal-overlay" id="editModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>编辑基金配置</h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-field">
+                    <label>基金代码</label>
+                    <input type="text" id="editCode" disabled>
+                </div>
+                <div class="form-field">
+                    <label>基金名称</label>
+                    <input type="text" id="editName" disabled>
+                </div>
+                <div class="form-field">
+                    <label>估算算法</label>
+                    <select id="editAlgo" onchange="toggleEditAlgoConfig()">
+                        <option value="holdings">持仓+残差代理估算法</option>
+                        <option value="industry">指数/行业代理估算法</option>
+                        <option value="overseas">境外持仓+代理估算法</option>
+                    </select>
+                </div>
+                <div class="form-field">
+                    <label>分类</label>
+                    <select id="editCategory">
+                        <option value="domestic">国内LOF</option>
+                        <option value="hk">港股LOF</option>
+                        <option value="overseas">境外美股LOF</option>
+                    </select>
+                </div>
+                <!-- Edit: industry config -->
+                <div class="algo-config" id="editIndustryConfig">
+                    <div class="form-field">
+                        <label>行业指数代码</label>
+                        <input type="text" id="editIndexCode" placeholder="如：0.399997">
+                        <p class="hint">输入东方财富格式的行业指数代码</p>
+                    </div>
+                    <div class="quick-select">
+                        <div class="quick-select-title">常用A股指数：</div>
+                        <div class="chips" id="editIndexChips">
+                            <span class="chip" onclick="selectChip('editIndexCode', '0.399997', this)">中证白酒</span>
+                            <span class="chip" onclick="selectChip('editIndexCode', '1.000001', this)">上证指数</span>
+                            <span class="chip" onclick="selectChip('editIndexCode', '0.399001', this)">深证成指</span>
+                            <span class="chip" onclick="selectChip('editIndexCode', '0.399006', this)">创业板指</span>
+                            <span class="chip" onclick="selectChip('editIndexCode', '1.000300', this)">沪深300</span>
+                            <span class="chip" onclick="selectChip('editIndexCode', '100.HSCEI', this)">恒生国企</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Edit: overseas config -->
+                <div class="algo-config" id="editOverseasConfig">
+                    <div class="form-field">
+                        <label>境外指数/ETF/商品代码</label>
+                        <input type="text" id="editUsIndexCode" placeholder="如：100.NDX">
+                        <p class="hint">用于期货估算和实时行情</p>
+                    </div>
+                    <div class="quick-select">
+                        <div class="quick-select-title">常用境外代理：</div>
+                        <div class="chips" id="editUsIndexChips">
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '100.NDX', this)">纳斯达克100</span>
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '100.DJIA', this)">道琼斯</span>
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '100.SPX', this)">标普500</span>
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '100.IXIC', this)">纳斯达克综合</span>
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '100.HSCEI', this)">恒生国企</span>
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '101.GC00Y', this)">COMEX黄金</span>
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '102.CL00Y', this)">NYMEX原油</span>
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '101.SI00Y', this)">COMEX白银</span>
+                            <span class="chip" onclick="selectChip('editUsIndexCode', '105.NFTY', this)">印度NIFTY</span>
+                        </div>
+                    </div>
+                    <!-- Overseas holdings in edit modal -->
+                    <div class="overseas-holdings-section">
+                        <h4>🇺🇸 美股持仓管理</h4>
+                        <div class="holdings-actions">
+                            <button class="btn btn-sm btn-fetch" onclick="fetchOverseasHoldings()">📡 从API导入</button>
+                            <button class="btn btn-sm btn-edit" onclick="showManualOverseasInput()">✏️ 手动输入</button>
+                        </div>
+                        <div id="editOverseasHoldingsManual" style="display:none;margin-bottom:10px">
+                            <div class="form-field">
+                                <label>手动输入持仓（JSON格式）</label>
+                                <textarea id="editOverseasHoldingsJson" rows="4" placeholder='[{"stock_code":"AAPL","stock_name":"苹果","holding_ratio":8.5,"em_code":"105.AAPL"}]'></textarea>
+                            </div>
+                            <button class="btn btn-sm btn-save" onclick="saveManualOverseasHoldings()">保存持仓</button>
+                        </div>
+                        <div class="holdings-list" id="editOverseasHoldingsList">
+                            <p style="color:#6d5f53;font-size:13px">加载中...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-cancel" onclick="closeModal()">取消</button>
+                <button class="btn btn-save" onclick="saveEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const INDEX_NAMES = {
+            '0.399997': '中证白酒', '1.000001': '上证指数', '0.399001': '深证成指',
+            '0.399006': '创业板指', '1.000016': '上证50', '0.399905': '中证500',
+            '1.000300': '沪深300', '0.399989': '中证医疗', '0.399971': '中证传媒',
+            '1.000819': '有色金属', '1.000011': '基金指数', '100.HSCEI': '恒生国企',
+        };
+        const US_INDEX_NAMES = {
+            '100.NDX': '纳斯达克100', '100.DJIA': '道琼斯', '100.SPX': '标普500',
+            '100.IXIC': '纳斯达克综合', '100.HSCEI': '恒生国企',
+            '101.GC00Y': 'COMEX黄金', '102.CL00Y': 'NYMEX原油', '101.SI00Y': 'COMEX白银',
+            '105.NFTY': '印度NIFTY',
+        };
+
+        function getIndexDisplayName(code) {
+            return INDEX_NAMES[code] || US_INDEX_NAMES[code] || code;
+        }
+
+        function showToast(msg, type = 'success') {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.className = `toast ${type} show`;
+            setTimeout(() => toast.className = 'toast', 3000);
+        }
+
+        function toggleAlgoConfig() {
+            const algo = document.getElementById('fundAlgo').value;
+            document.getElementById('industryConfig').className = algo === 'industry' ? 'algo-config show' : 'algo-config';
+            document.getElementById('overseasConfig').className = algo === 'overseas' ? 'algo-config show' : 'algo-config';
+        }
+
+        function toggleEditAlgoConfig() {
+            const algo = document.getElementById('editAlgo').value;
+            document.getElementById('editIndustryConfig').className = algo === 'industry' ? 'algo-config show' : 'algo-config';
+            document.getElementById('overseasConfig') && (document.getElementById('editOverseasConfig').className = algo === 'overseas' ? 'algo-config show' : 'algo-config');
+        }
+
+        function selectChip(inputId, code, el) {
+            document.getElementById(inputId).value = code;
+            // Highlight chip in the parent container
+            const parent = el.closest('.chips');
+            if (parent) {
+                parent.querySelectorAll('.chip').forEach(c => {
+                    c.classList.remove('active', 'active-purple');
+                });
+            }
+            // Use purple highlight for US index chips
+            const isUs = inputId.toLowerCase().includes('usindex') || inputId.toLowerCase().includes('usindex');
+            el.classList.add(isUs ? 'active-purple' : 'active');
+        }
+
+        async function addFund() {
+            const code = document.getElementById('fundCode').value.trim();
+            const market = document.getElementById('fundMarket').value;
+            const algo = document.getElementById('fundAlgo').value;
+            const indexCode = document.getElementById('indexCode').value.trim();
+            const usIndexCode = document.getElementById('usIndexCode').value.trim();
+
+            if (!code) { showToast('请输入基金代码', 'error'); return; }
+            if (!/^\d{6}$/.test(code)) { showToast('基金代码应为6位数字', 'error'); return; }
+            if (algo === 'industry' && !indexCode) { showToast('指数/行业代理估算法需要填写指数代码', 'error'); return; }
+            if (algo === 'overseas' && !usIndexCode) { showToast('境外持仓+代理估算法需要填写境外指数/ETF/商品代码', 'error'); return; }
+
+            const btn = document.getElementById('addBtn');
+            btn.disabled = true;
+            btn.textContent = '添加中...';
+
+            try {
+                const category = document.getElementById('fundCategory').value;
+            const body = {
+                    fund_code: code, market, algo_type: algo, category: category,
+                    industry_index_code: indexCode, us_index_code: usIndexCode,
+                };
+                const resp = await fetch('/api/funds', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const json = await resp.json();
+                if (json.code === 0) {
+                    showToast(json.msg, 'success');
+                    document.getElementById('fundCode').value = '';
+                    document.getElementById('indexCode').value = '';
+                    document.getElementById('usIndexCode').value = '';
+                    document.getElementById('overseasHoldingsInput').value = '';
+                    document.querySelectorAll('.chips .chip').forEach(c => c.classList.remove('active', 'active-purple'));
+
+                    // If overseas algo and has manual holdings, save them
+                    if (algo === 'overseas') {
+                        const holdingsText = document.getElementById('overseasHoldingsInput').value.trim();
+                        if (holdingsText) {
+                            try {
+                                const holdings = JSON.parse(holdingsText);
+                                await fetch(`/api/funds/${code}/overseas-holdings`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ holdings })
+                                });
+                            } catch (e) {
+                                showToast('美股持仓数据格式错误', 'error');
+                            }
+                        } else {
+                            // Try to auto-fetch from API
+                            try {
+                                await fetch(`/api/funds/${code}/overseas-holdings/fetch`, { method: 'POST' });
+                            } catch (e) {}
+                        }
+                    }
+                    loadFunds();
+                } else {
+                    showToast(json.msg, 'error');
+                }
+            } catch (e) {
+                showToast('添加失败: ' + e.message, 'error');
+            }
+
+            btn.disabled = false;
+            btn.textContent = '添加基金';
+        }
+
+        async function loadFunds() {
+            try {
+                const resp = await fetch('/api/funds');
+                const json = await resp.json();
+                if (json.code === 0) renderFundList(json.data);
+            } catch (e) { console.error(e); }
+        }
+
+        function renderFundList(funds) {
+            const tbody = document.getElementById('fundListBody');
+            if (!funds || funds.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state">暂无监控基金，请添加</div></td></tr>';
+                return;
+            }
+            let html = '';
+            funds.forEach(f => {
+                let algoClass = 'algo-holdings', algoName = '持仓+残差';
+                if (f.algo_type === 'industry') { algoClass = 'algo-industry'; algoName = '指数代理'; }
+                else if (f.algo_type === 'overseas') { algoClass = 'algo-overseas'; algoName = '境外代理'; }
+
+                const cat = f.category || 'domestic';
+                let catLabel = '国内', catCss = 'cat-domestic';
+                if (cat === 'hk') { catLabel = '港股'; catCss = 'cat-hk'; }
+                else if (cat === 'overseas') { catLabel = '境外'; catCss = 'cat-overseas'; }
+
+                let indexDisplay = '--';
+                if (f.algo_type === 'industry' && f.industry_index_code) {
+                    const idxName = f.index_name || getIndexDisplayName(f.industry_index_code);
+                    indexDisplay = `<div class="index-display"><span class="index-name">${idxName}</span><br><span class="index-code">${f.industry_index_code}</span></div>`;
+                } else if (f.algo_type === 'overseas') {
+                    let parts = [];
+                    if (f.us_index_code) {
+                        const usName = US_INDEX_NAMES[f.us_index_code] || f.us_index_code;
+                        parts.push(`<span class="us-index-name">🇺🇸${usName}</span><br><span class="index-code">${f.us_index_code}</span>`);
+                    }
+                    indexDisplay = parts.length ? `<div class="index-display">${parts.join('<br>')}</div>` : '--';
+                }
+
+                html += `
+                    <tr>
+                        <td><span class="fund-code">${f.fund_code}</span></td>
+                        <td>${f.fund_name}</td>
+                        <td>${f.market === 'sh' ? '上交所' : '深交所'}</td>
+                        <td><span class="cat-badge ${catCss}">${catLabel}</span></td>
+                        <td><span class="algo-tag ${algoClass}">${algoName}</span></td>
+                        <td>${indexDisplay}</td>
+                        <td>
+                            <button class="btn btn-sm btn-edit" onclick="editFund('${f.fund_code}', '${f.fund_name}', '${f.algo_type}', '${f.industry_index_code || ''}', '${f.us_index_code || ''}', '${cat}')">编辑</button>
+                            <button class="btn btn-sm btn-delete" onclick="deleteFund('${f.fund_code}')">删除</button>
+                        </td>
+                    </tr>`;
+            });
+            tbody.innerHTML = html;
+        }
+
+        async function loadAlgos() {
+            try {
+                const resp = await fetch('/api/algos');
+                const json = await resp.json();
+                if (json.code === 0) {
+                    let html = '';
+                    json.data.forEach(a => {
+                        let tagClass = 'algo-holdings';
+                        if (a.algo_type === 'industry') tagClass = 'algo-industry';
+                        else if (a.algo_type === 'overseas') tagClass = 'algo-overseas';
+                        html += `
+                            <div style="margin-bottom:12px;padding:12px;background:#12100d;border-radius:6px;border:1px solid #3d3028">
+                                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                                    <strong style="color:#d4956a">${a.algo_name}</strong>
+                                    <span class="algo-tag ${tagClass}">${a.algo_type}</span>
+                                </div>
+                                <p style="font-size:13px;color:#a89a8c">${a.description}</p>
+                            </div>`;
+                    });
+                    document.getElementById('algoList').innerHTML = html;
+                }
+            } catch (e) {
+                document.getElementById('algoList').innerHTML = '<p style="color:#e8654a">加载失败</p>';
+            }
+        }
+
+        let currentEditFundCode = '';
+
+        function editFund(code, name, algo, indexCode, usIndexCode, category) {
+            currentEditFundCode = code;
+            document.getElementById('editCode').value = code;
+            document.getElementById('editName').value = name;
+            document.getElementById('editAlgo').value = algo;
+            document.getElementById('editCategory').value = category || 'domestic';
+            document.getElementById('editIndexCode').value = indexCode;
+            document.getElementById('editUsIndexCode').value = usIndexCode;
+            toggleEditAlgoConfig();
+            // Load overseas holdings if algo is overseas
+            if (algo === 'overseas') {
+                loadEditOverseasHoldings(code);
+            }
+            document.getElementById('editModal').classList.add('show');
+        }
+
+        async function loadEditOverseasHoldings(code) {
+            const listEl = document.getElementById('editOverseasHoldingsList');
+            try {
+                const resp = await fetch(`/api/funds/${code}/overseas-holdings`);
+                const json = await resp.json();
+                if (json.code === 0 && json.data.length > 0) {
+                    let html = '<table><thead><tr><th>代码</th><th>名称</th><th>占比%</th><th>EM代码</th></tr></thead><tbody>';
+                    json.data.forEach(h => {
+                        html += `<tr><td class="fund-code" style="font-size:12px">${h.stock_code}</td><td>${h.stock_name}</td><td>${h.holding_ratio.toFixed(2)}%</td><td style="color:#6d5f53;font-size:11px">${h.em_code || '--'}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    listEl.innerHTML = html;
+                } else {
+                    listEl.innerHTML = '<p style="color:#6d5f53;font-size:13px">暂无美股持仓数据，请点击导入或手动输入</p>';
+                }
+            } catch (e) {
+                listEl.innerHTML = '<p style="color:#e8654a;font-size:13px">加载失败</p>';
+            }
+        }
+
+        async function fetchOverseasHoldings() {
+            const code = currentEditFundCode;
+            if (!code) return;
+            try {
+                const resp = await fetch(`/api/funds/${code}/overseas-holdings/fetch`, { method: 'POST' });
+                const json = await resp.json();
+                if (json.code === 0) {
+                    showToast(json.msg, 'success');
+                    loadEditOverseasHoldings(code);
+                } else {
+                    showToast(json.msg, 'error');
+                }
+            } catch (e) {
+                showToast('获取失败', 'error');
+            }
+        }
+
+        function showManualOverseasInput() {
+            const el = document.getElementById('editOverseasHoldingsManual');
+            el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        }
+
+        async function saveManualOverseasHoldings() {
+            const code = currentEditFundCode;
+            const text = document.getElementById('editOverseasHoldingsJson').value.trim();
+            if (!text) { showToast('请输入持仓数据', 'error'); return; }
+            try {
+                const holdings = JSON.parse(text);
+                const resp = await fetch(`/api/funds/${code}/overseas-holdings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ holdings })
+                });
+                const json = await resp.json();
+                if (json.code === 0) {
+                    showToast(json.msg, 'success');
+                    document.getElementById('editOverseasHoldingsManual').style.display = 'none';
+                    loadEditOverseasHoldings(code);
+                } else {
+                    showToast(json.msg, 'error');
+                }
+            } catch (e) {
+                showToast('JSON格式错误', 'error');
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('editModal').classList.remove('show');
+        }
+
+        async function saveEdit() {
+            const code = document.getElementById('editCode').value;
+            const algo = document.getElementById('editAlgo').value;
+            const category = document.getElementById('editCategory').value;
+            const indexCode = document.getElementById('editIndexCode').value.trim();
+            const usIndexCode = document.getElementById('editUsIndexCode').value.trim();
+
+            if (algo === 'industry' && !indexCode) { showToast('指数/行业代理估算法需要填写指数代码', 'error'); return; }
+            if (algo === 'overseas' && !usIndexCode) { showToast('境外持仓+代理估算法需要填写境外指数/ETF/商品代码', 'error'); return; }
+
+            try {
+                const resp = await fetch(`/api/funds/${code}/algo`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ algo_type: algo, category: category, industry_index_code: indexCode, us_index_code: usIndexCode })
+                });
+                const json = await resp.json();
+                if (json.code === 0) {
+                    showToast('配置已更新，数据重新估算中...', 'success');
+                    closeModal();
+                    loadFunds();
+                } else {
+                    showToast(json.msg, 'error');
+                }
+            } catch (e) {
+                showToast('保存失败', 'error');
+            }
+        }
+
+        async function deleteFund(code) {
+            if (!confirm(`确定删除基金 ${code}？`)) return;
+            try {
+                const resp = await fetch(`/api/funds/${code}`, { method: 'DELETE' });
+                const json = await resp.json();
+                if (json.code === 0) { showToast(json.msg, 'success'); loadFunds(); }
+                else { showToast(json.msg, 'error'); }
+            } catch (e) { showToast('删除失败', 'error'); }
+        }
+
+        async function refreshAllHoldings() {
+            if (!confirm('确定要刷新所有基金的持仓数据吗？这将从数据源重新获取所有国内和境外持仓，可能需要几分钟。')) return;
+            try {
+                const resp = await fetch('/api/refresh-holdings', { method: 'POST' });
+                const json = await resp.json();
+                if (json.code === 0) {
+                    showToast(json.msg, 'success');
+                } else {
+                    showToast(json.msg, 'error');
+                }
+            } catch (e) { showToast('触发刷新失败', 'error'); }
+        }
+
+        // Initial load
+        loadFunds();
+        loadAlgos();
+
+        // ===== DuckDNS Modal =====
+        async function openDuckDnsModal() {
+            document.getElementById('duckdnsModal').classList.add('show');
+            try {
+                const resp = await fetch('/api/duckdns');
+                const json = await resp.json();
+                if (json.code === 0) {
+                    document.getElementById('duckdnsDomain').value = json.data.domain || '';
+                    document.getElementById('duckdnsToken').value = json.data.token || '';
+                    document.getElementById('duckdnsCurrentIpv4').textContent = json.data.current_ipv4 || '无';
+                    document.getElementById('duckdnsCurrentIpv6').textContent = json.data.current_ipv6 || '无';
+                    document.getElementById('duckdnsFullDomain').textContent = json.data.full_domain || '--';
+                }
+            } catch (e) {
+                console.error('Failed to load DuckDNS config:', e);
+            }
+        }
+
+        function closeDuckDnsModal() {
+            document.getElementById('duckdnsModal').classList.remove('show');
+        }
+
+        async function saveDuckDnsConfig() {
+            const domain = document.getElementById('duckdnsDomain').value.trim();
+            const token = document.getElementById('duckdnsToken').value.trim();
+            if (!domain) { showToast('请输入子域名', 'error'); return; }
+            if (!token) { showToast('请输入Token', 'error'); return; }
+            try {
+                const resp = await fetch('/api/duckdns', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain, token })
+                });
+                const json = await resp.json();
+                if (json.code === 0) {
+                    showToast(json.msg, 'success');
+                    document.getElementById('duckdnsFullDomain').textContent = domain + '.duckdns.org';
+                } else {
+                    showToast(json.msg, 'error');
+                }
+            } catch (e) {
+                showToast('保存失败: ' + e.message, 'error');
+            }
+        }
+
+        async function updateDuckDnsNow() {
+            const btn = document.getElementById('duckdnsUpdateBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ 更新中...';
+            try {
+                const resp = await fetch('/api/duckdns/update', { method: 'POST' });
+                const json = await resp.json();
+                if (json.code === 0) {
+                    showToast(json.msg, 'success');
+                    // Refresh IP display
+                    if (json.data) {
+                        if (json.data.ipv4) document.getElementById('duckdnsCurrentIpv4').textContent = json.data.ipv4;
+                        if (json.data.ipv6) document.getElementById('duckdnsCurrentIpv6').textContent = json.data.ipv6;
+                    }
+                } else {
+                    showToast(json.msg || '更新失败', 'error');
+                }
+            } catch (e) {
+                showToast('更新失败: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🔄 立即更新';
+            }
+        }
+    </script>
+</body>
+</html>

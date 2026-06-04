@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LOF基金折溢价监控</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            background: #171412;
+            color: #ede4d8;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #231d18 0%, #12100d 100%);
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #3d3028;
+        }
+        .header h1 {
+            font-size: 18px;
+            color: #d4956a;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .header h1 .icon { font-size: 22px; }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .trading-status {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .trading-status.open {
+            background: rgba(93, 170, 82, 0.2);
+            color: #5daa52;
+            border: 1px solid rgba(93, 170, 82, 0.4);
+        }
+        .trading-status.closed {
+            background: rgba(138, 128, 118, 0.2);
+            color: #8a8076;
+            border: 1px solid rgba(138, 128, 118, 0.3);
+        }
+        .pulse-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+            animation: pulse 1.5s infinite;
+        }
+        .pulse-dot.green { background: #5daa52; }
+        .pulse-dot.gray { background: #8a8076; animation: none; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        .update-time {
+            font-size: 12px;
+            color: #a89a8c;
+            display: none;
+        }
+        .btn {
+            padding: 8px 18px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .btn-admin {
+            background: transparent;
+            color: #d4956a;
+            border: 1px solid #d4956a;
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+        .btn-admin:hover { background: rgba(212, 149, 106, 0.1); }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 12px; }
+
+        /* Filter & Sort bar */
+        .filter-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .filter-bar .left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .filter-bar .right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .category-tabs {
+            display: flex;
+            gap: 0;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #3d3028;
+        }
+        .category-tab {
+            padding: 7px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            background: #1e1914;
+            color: #a89a8c;
+            transition: all 0.2s;
+            border: none;
+            white-space: nowrap;
+        }
+        .category-tab:hover { background: #28221b; color: #ede4d8; }
+        .category-tab.active {
+            background: #b87a45;
+            color: #fff;
+        }
+        .category-tab + .category-tab {
+            border-left: 1px solid #3d3028;
+        }
+        .fund-count {
+            font-size: 12px;
+            color: #6d5f53;
+        }
+        /* Sortable table header */
+        thead th.sortable {
+            cursor: pointer;
+            user-select: none;
+            transition: color 0.15s;
+        }
+        thead th.sortable:hover {
+            color: #ede4d8;
+        }
+        thead th.sortable .sort-arrow {
+            display: inline-block;
+            font-size: 12px;
+            margin-left: 4px;
+            opacity: 0.4;
+            vertical-align: middle;
+            transition: opacity 0.15s, transform 0.2s;
+        }
+        thead th.sortable:hover .sort-arrow { opacity: 0.7; }
+        thead th.sortable.sort-desc .sort-arrow {
+            opacity: 1;
+            color: #d4956a;
+        }
+        thead th.sortable.sort-asc .sort-arrow {
+            opacity: 1;
+            color: #d4956a;
+            transform: rotate(180deg);
+        }
+        .btn-refresh {
+            background: transparent;
+            color: #d4956a;
+            border: 1px solid rgba(212, 149, 106, 0.3);
+            padding: 5px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .btn-refresh:hover { background: rgba(212, 149, 106, 0.1); }
+        .btn-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* ===== Desktop: Table layout ===== */
+        .fund-table-wrap {
+            background: #1e1914;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #3d3028;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        thead th {
+            background: #28221b;
+            padding: 14px 16px;
+            text-align: left;
+            font-size: 13px;
+            font-weight: 600;
+            color: #a89a8c;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #3d3028;
+            white-space: nowrap;
+        }
+        tbody tr {
+            border-bottom: 1px solid rgba(61, 48, 40, 0.5);
+            transition: background 0.15s;
+        }
+        tbody tr:hover { background: rgba(212, 149, 106, 0.05); }
+        tbody td {
+            padding: 14px 16px;
+            font-size: 14px;
+        }
+        .fund-code {
+            font-weight: 700;
+            color: #d4956a;
+            font-family: "SFMono-Regular", Consolas, monospace;
+        }
+        .fund-name {
+            color: #ede4d8;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .num { font-family: "SFMono-Regular", Consolas, monospace; font-weight: 500; }
+        .up { color: #e8654a; }
+        .down { color: #3da88e; }
+        .neutral { color: #a89a8c; }
+
+        .premium-positive { 
+            color: #e8654a; 
+            font-weight: 700;
+            background: rgba(232, 101, 74, 0.1);
+            padding: 4px 10px;
+            border-radius: 4px;
+        }
+        .premium-negative { 
+            color: #3da88e; 
+            font-weight: 700;
+            background: rgba(61, 168, 142, 0.1);
+            padding: 4px 10px;
+            border-radius: 4px;
+        }
+        .premium-zero {
+            color: #a89a8c;
+            font-weight: 700;
+            padding: 4px 10px;
+        }
+
+        .status-tag {
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+        .status-open {
+            background: rgba(93, 170, 82, 0.15);
+            color: #5daa52;
+        }
+        .status-closed {
+            background: rgba(232, 101, 74, 0.15);
+            color: #e8654a;
+        }
+        .status-limited {
+            background: rgba(212, 160, 86, 0.15);
+            color: #d4a056;
+        }
+
+        /* Category badge */
+        .cat-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 500;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        .cat-domestic { background: rgba(212, 149, 106, 0.12); color: #d4956a; }
+        .cat-hk { background: rgba(212, 160, 86, 0.12); color: #d4a056; }
+        .cat-overseas { background: rgba(184, 122, 138, 0.12); color: #b87a8a; }
+
+        .holdings-toggle {
+            cursor: pointer;
+            color: #d4956a;
+            font-size: 13px;
+            user-select: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .holdings-toggle:hover { text-decoration: underline; }
+        .holdings-toggle .arrow {
+            display: inline-block;
+            transition: transform 0.2s;
+            font-size: 10px;
+        }
+        .holdings-toggle.expanded .arrow { transform: rotate(90deg); }
+
+        .algo-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+        }
+        .algo-indicator .algo-icon {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+        .algo-indicator.holdings .algo-icon { background: #d4956a; }
+        .algo-indicator.industry .algo-icon { background: #d4a056; }
+        .algo-indicator.overseas .algo-icon { background: #b87a8a; }
+        .algo-indicator .algo-label {
+            color: #a89a8c;
+        }
+        .algo-indicator.industry .algo-label {
+            color: #d4a056;
+        }
+        .algo-indicator.overseas .algo-label {
+            color: #b87a8a;
+        }
+        .period-tag {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: rgba(184, 122, 138, 0.15);
+            color: #b87a8a;
+            margin-left: 4px;
+        }
+
+        .holdings-row td {
+            padding: 0 !important;
+            border-bottom: 1px solid rgba(61, 48, 40, 0.3);
+        }
+        .holdings-panel {
+            display: none;
+            background: #12100d;
+            padding: 16px 24px;
+        }
+        .holdings-panel.show { display: block; }
+        .holdings-panel table {
+            margin: 0;
+        }
+        .holdings-panel th {
+            background: #1e1914;
+            font-size: 12px;
+            padding: 10px 12px;
+        }
+        .holdings-panel td {
+            font-size: 13px;
+            padding: 10px 12px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6d5f53;
+        }
+        .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+        .empty-state p { font-size: 15px; margin-bottom: 8px; }
+        .empty-state a { color: #d4956a; text-decoration: none; }
+        .empty-state a:hover { text-decoration: underline; }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6d5f53;
+        }
+        .spinner {
+            display: inline-block;
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(212, 149, 106, 0.2);
+            border-top-color: #d4956a;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ===== Mobile: Card layout ===== */
+        .footer {
+            text-align: center;
+            padding: 24px 16px;
+            color: #6d5f53;
+            font-size: 12px;
+            border-top: 1px solid #3d3028;
+            margin-top: 20px;
+        }
+
+        .fund-cards {
+            display: none;
+        }
+        .fund-card {
+            background: #1e1914;
+            border-radius: 10px;
+            border: 1px solid #3d3028;
+            margin-bottom: 10px;
+            padding: 12px 14px;
+            overflow: hidden;
+        }
+        .fund-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .fund-card-header .left-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .fund-card-header .fund-code {
+            font-size: 15px;
+            font-weight: 700;
+        }
+        .fund-card-header .fund-name {
+            font-size: 13px;
+            color: #ede4d8;
+            max-width: 160px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .fund-card-header .cat-badge {
+            margin-left: 0;
+        }
+        .fund-card-header .premium-badge {
+            font-size: 13px;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 4px;
+        }
+        .fund-card-body {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px 4px;
+        }
+        .fund-card-field {
+            display: flex;
+            flex-direction: column;
+        }
+        .fund-card-field .label {
+            font-size: 10px;
+            color: #6d5f53;
+            margin-bottom: 2px;
+        }
+        .fund-card-field .value {
+            font-size: 13px;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-weight: 500;
+        }
+        .fund-card-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(61, 48, 40, 0.5);
+        }
+        .fund-card-footer .status-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .fund-card-footer .status-tag {
+            font-size: 11px;
+            padding: 2px 8px;
+        }
+        .fund-card-footer .holdings-toggle {
+            font-size: 12px;
+        }
+        .fund-card .holdings-panel {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 6px;
+        }
+        .fund-card .holdings-panel th,
+        .fund-card .holdings-panel td {
+            padding: 6px 8px;
+            font-size: 11px;
+        }
+
+        /* ===== Responsive breakpoints ===== */
+        @media (min-width: 769px) {
+            .header { padding: 16px 32px; }
+            .header h1 { font-size: 22px; }
+            .header h1 .icon { font-size: 28px; }
+            .update-time { display: block; }
+            .container { padding: 20px; }
+            .category-tab { padding: 8px 16px; font-size: 13px; }
+        }
+
+        @media (max-width: 768px) {
+            /* On mobile: hide table, show cards */
+            .fund-table-wrap { display: none; }
+            .fund-cards { display: block; }
+
+            /* Mobile sort toggle for premium */
+            .mobile-sort-btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                padding: 5px 10px;
+                border-radius: 4px;
+                cursor: pointer;
+                background: #1e1914;
+                color: #a89a8c;
+                border: 1px solid #3d3028;
+                font-size: 12px;
+                transition: all 0.15s;
+                white-space: nowrap;
+            }
+            .mobile-sort-btn:hover { background: #28221b; color: #ede4d8; }
+            .mobile-sort-btn.sort-desc,
+            .mobile-sort-btn.sort-asc {
+                background: rgba(212, 149, 106, 0.15);
+                color: #d4956a;
+                border-color: rgba(212, 149, 106, 0.3);
+            }
+
+            .filter-bar .right {
+                width: 100%;
+                justify-content: space-between;
+            }
+        }
+
+        @media (min-width: 769px) {
+            .mobile-sort-btn { display: none; }
+        }
+
+        /* ===== WeChat Settings Panel ===== */
+        .wechat-panel-overlay { display:none; position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.7); z-index:1000; justify-content:center; align-items:center; }
+        .wechat-panel-overlay.show { display:flex; }
+        .wechat-panel { background:#1e1914; border:1px solid #3d3028; border-radius:12px; padding:24px; max-width:540px; width:90%; max-height:85vh; overflow-y:auto; }
+        .wechat-panel h3 { color:#d4956a; font-size:18px; margin:0 0 20px; display:flex; align-items:center; gap:8px; }
+        .wechat-panel .close-btn { background:none; border:none; color:#8a8076; font-size:20px; cursor:pointer; margin-left:auto; padding:0 4px; }
+        .wechat-panel .close-btn:hover { color:#e8654a; }
+        .wechat-panel .form-group { margin-bottom:16px; }
+        .wechat-panel label { display:block; color:#a89a8c; font-size:13px; margin-bottom:6px; font-weight:500; }
+        .wechat-panel input[type="text"], .wechat-panel input[type="number"] { width:100%; padding:10px 12px; background:#12100d; border:1px solid #3d3028; border-radius:6px; color:#ede4d8; font-size:14px; outline:none; transition:border-color 0.2s; }
+        .wechat-panel input:focus { border-color:#d4956a; }
+        .wechat-panel .helper-text { font-size:11px; color:#6d5f53; margin-top:4px; }
+        .wechat-panel .helper-text a { color:#d4956a; text-decoration:none; }
+        .wechat-panel .helper-text a:hover { text-decoration:underline; }
+        .wechat-panel .checkbox-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+        .wechat-panel input[type="checkbox"] { accent-color:#d4956a; width:16px; height:16px; cursor:pointer; }
+        .wechat-panel .threshold-row { display:flex; align-items:center; gap:8px; margin-left:24px; margin-bottom:8px; }
+        .wechat-panel .threshold-row input { width:100px; padding:6px 10px; font-size:13px; }
+        .wechat-panel .threshold-row span { color:#a89a8c; font-size:13px; white-space:nowrap; }
+        .wechat-panel .btn-row { display:flex; gap:10px; margin-top:20px; }
+        .wechat-panel .btn-primary { padding:10px 24px; background:#d4956a; color:#1e1914; border:none; border-radius:6px; cursor:pointer; font-size:14px; font-weight:600; transition:all 0.2s; }
+        .wechat-panel .btn-primary:hover { background:#c08050; }
+        .wechat-panel .btn-secondary { padding:10px 24px; background:transparent; color:#a89a8c; border:1px solid #3d3028; border-radius:6px; cursor:pointer; font-size:14px; transition:all 0.2s; }
+        .wechat-panel .btn-secondary:hover { background:rgba(61,48,40,0.3); color:#ede4d8; }
+        .wechat-panel .btn-test { padding:8px 16px; background:rgba(93,170,82,0.15); color:#5daa52; border:1px solid rgba(93,170,82,0.3); border-radius:6px; cursor:pointer; font-size:13px; transition:all 0.2s; }
+        .wechat-panel .btn-test:hover { background:rgba(93,170,82,0.25); }
+        .wechat-panel .toast { padding:10px 14px; border-radius:6px; font-size:13px; margin-top:12px; display:none; }
+        .wechat-panel .toast.show { display:block; }
+        .wechat-panel .toast.success { background:rgba(93,170,82,0.15); color:#5daa52; border:1px solid rgba(93,170,82,0.3); }
+        .wechat-panel .toast.error { background:rgba(232,101,74,0.15); color:#e8654a; border:1px solid rgba(232,101,74,0.3); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><span class="icon">📊</span> LOF基金折溢价监控</h1>
+        <div class="header-right">
+            <span class="update-time" id="updateTime">--</span>
+            <span class="trading-status closed" id="tradingStatus">
+                <span class="pulse-dot gray"></span>休市
+            </span>
+            <button class="btn btn-admin" onclick="location.href='/admin'">⚙️ 管理</button>
+            <button class="btn btn-admin" onclick="openWechatPanel()" style="border-color: rgba(93,170,82,0.4); color: #5daa52;">💬 微信</button>
+        </div>
+    </div>
+
+    <div class="wechat-panel-overlay" id="wechatOverlay" onclick="if(event.target==this)closeWechatPanel()">
+        <div class="wechat-panel">
+            <h3>💬 微信推送设置 <button class="close-btn" onclick="closeWechatPanel()">&times;</button></h3>
+            <div class="form-group">
+                <label>Server酱 SendKey</label>
+                <input type="text" id="sendKey" placeholder="可填多个 SendKey，用逗号/分号/空格/换行分隔" />
+                <div class="helper-text">前往 <a href="https://sct.ftqq.com/" target="_blank">Server酱官网</a> 扫码关注获取 SendKey；多个微信可填多个 SendKey。已保存：<span id="maskedKey" style="color:#d4956a">未配置</span></div>
+            </div>
+            <div class="form-group">
+                <label>定时告警推送</label>
+                <div class="checkbox-row"><input type="checkbox" id="pushEnabled" onchange="toggleTimeInput()" /><span>启用定时告警推送</span></div>
+                <div class="threshold-row" id="timeInputRow" style="display:none"><span>告警推送时间</span><input type="text" id="pushTime" placeholder="08:00,20:00" style="width:160px" /><span style="font-size:11px;color:#6d5f53">HH:MM，逗号分隔</span></div>
+            </div>
+            <div class="form-group">
+                <label>折溢价阈值告警</label>
+                <div class="checkbox-row"><input type="checkbox" id="premiumAlertEnabled" onchange="togglePremiumInputs()" /><span>溢价告警</span></div>
+                <div class="threshold-row" id="premiumInputs" style="display:none"><span>溢价 ≥</span><input type="number" id="premiumUpper" step="0.1" value="3.0" /><span>% 时推送</span></div>
+                <div class="checkbox-row"><input type="checkbox" id="discountAlertEnabled" onchange="toggleDiscountInputs()" /><span>折价告警</span></div>
+                <div class="threshold-row" id="discountInputs" style="display:none"><span>折价 ≤</span><input type="number" id="discountLower" step="0.1" value="-5.0" /><span>% 时推送</span></div>
+                <div class="form-group">
+                <label>成交金额过滤</label>
+                <div class="threshold-row"><span>最低成交金额</span><input type="number" id="minTurnover" step="1" value="60" /><span>万元</span></div>
+                <div class="helper-text">仅推送成交金额达标的基金，避免推送交易清淡的基金</div>
+            </div>
+            <div class="helper-text">v1.6a 自动微信推送只会在上方时间所在分钟检查阈值；同一天同一 HH:MM 只执行 1 次，服务重启或重复启动也不会重复推送；不再推送汇总，也不改变数据刷新时间。</div>
+            </div>
+            <div class="btn-row">
+                <button class="btn-primary" onclick="saveWechatConfig()">💾 保存设置</button>
+            </div>
+            <div class="toast" id="wechatToast"></div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="filter-bar">
+            <div class="left">
+                <div class="category-tabs">
+                    <button class="category-tab active" data-cat="all" onclick="setCategory('all', this)">全部</button>
+                    <button class="category-tab" data-cat="domestic" onclick="setCategory('domestic', this)">🇨🇳 国内</button>
+                    <button class="category-tab" data-cat="hk" onclick="setCategory('hk', this)">🇭🇰 港股</button>
+                    <button class="category-tab" data-cat="overseas" onclick="setCategory('overseas', this)">🇺🇸 境外</button>
+                </div>
+                <span class="fund-count" id="fundCount">共 0 只基金</span>
+            </div>
+            <div class="right">
+                <button class="mobile-sort-btn" id="mobileSortBtn" onclick="cyclePremiumSort()">溢价 <span style="font-size:10px;opacity:0.5">▼▲</span></button>
+                <button class="btn-refresh" id="refreshBtn" onclick="manualRefresh()">🔄 刷新</button>
+                <span class="fund-count" id="nextRefresh" style="font-size:11px;min-width:60px;text-align:right"></span>
+            </div>
+        </div>
+
+        <!-- Desktop: Table view -->
+        <div class="fund-table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>基金代码</th>
+                        <th>基金名称</th>
+                        <th>分类</th>
+                        <th>单位净值</th>
+                        <th>估算净值</th>
+                        <th>估算涨跌</th>
+                        <th>交易价格</th>
+                        <th>成交金额<span style="font-size:10px;color:#6d5f53;font-weight:normal">(万)</span></th>
+                        <th class="sortable" id="premiumHeader" onclick="cyclePremiumSort()">折溢价率<i style="font-size:10px;color:#6d5f53;font-style:normal;margin-left:4px">vs估算</i><span class="sort-arrow">▼</span></th>
+                        <th>申购</th>
+                        <th>赎回</th>
+                        <th>昨日申购<span style="font-size:10px;color:#6d5f53;font-weight:normal">(亿份)</span></th>
+                        <th>基金持仓</th>
+                    </tr>
+                </thead>
+                <tbody id="fundTableBody">
+                    <tr>
+                        <td colspan="13">
+                            <div class="loading"><div class="spinner"></div><p style="margin-top:12px">加载中...</p></div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Mobile: Card view -->
+        <div class="fund-cards" id="fundCards">
+            <div class="loading"><div class="spinner"></div><p style="margin-top:12px">加载中...</p></div>
+        </div>
+
+        <div class="footer">Power by 吉阳&东山</div>
+    </div>
+
+    <script>
+        let autoRefreshTimer = null;
+        let currentCategory = 'all';
+        // Sort state cycles: '' (default/code) -> 'desc' (premium desc) -> 'asc' (premium asc) -> '' ...
+        let premiumSortState = '';  // '', 'desc', 'asc'
+
+        function cyclePremiumSort() {
+            // Cycle through: '' -> 'desc' -> 'asc' -> ''
+            if (premiumSortState === '') premiumSortState = 'desc';
+            else if (premiumSortState === 'desc') premiumSortState = 'asc';
+            else premiumSortState = '';
+
+            // Update desktop header style
+            const header = document.getElementById('premiumHeader');
+            header.classList.remove('sort-desc', 'sort-asc');
+            if (premiumSortState === 'desc') header.classList.add('sort-desc');
+            else if (premiumSortState === 'asc') header.classList.add('sort-asc');
+
+            // Update mobile sort button style
+            const mobileBtn = document.getElementById('mobileSortBtn');
+            if (mobileBtn) {
+                mobileBtn.classList.remove('sort-desc', 'sort-asc');
+                if (premiumSortState === 'desc') {
+                    mobileBtn.classList.add('sort-desc');
+                    mobileBtn.innerHTML = '溢价 <span style="font-size:10px">▼</span>';
+                } else if (premiumSortState === 'asc') {
+                    mobileBtn.classList.add('sort-asc');
+                    mobileBtn.innerHTML = '溢价 <span style="font-size:10px">▲</span>';
+                } else {
+                    mobileBtn.innerHTML = '溢价 <span style="font-size:10px;opacity:0.5">▼▲</span>';
+                }
+            }
+
+            fetchFunds();
+        }
+
+        function setCategory(cat, el) {
+            currentCategory = cat;
+            document.querySelectorAll('.category-tab').forEach(t => t.classList.remove('active'));
+            el.classList.add('active');
+            fetchFunds();
+        }
+
+        async function fetchFunds() {
+            try {
+                let url = '/api/funds?category=' + currentCategory;
+                if (premiumSortState) {
+                    url += '&sort=premium_rate&order=' + premiumSortState;
+                }
+                const resp = await fetch(url);
+                const json = await resp.json();
+                if (json.code === 0) {
+                    renderFunds(json.data);
+                    renderCards(json.data);
+                }
+            } catch (e) {
+                console.error('Failed to fetch funds:', e);
+            }
+        }
+
+        const CATEGORY_LABELS = {
+            'domestic': '国内',
+            'hk': '港股',
+            'overseas': '境外',
+        };
+        const CATEGORY_CSS = {
+            'domestic': 'cat-domestic',
+            'hk': 'cat-hk',
+            'overseas': 'cat-overseas',
+        };
+
+        function renderFunds(funds) {
+            const tbody = document.getElementById('fundTableBody');
+            document.getElementById('fundCount').textContent = `共 ${funds.length} 只基金`;
+
+            if (funds.length === 0) {
+                tbody.innerHTML = `
+                    <tr><td colspan="13">
+                        <div class="empty-state">
+                            <div class="icon">📭</div>
+                            <p>暂无监控基金</p>
+                            <p>请前往 <a href="/admin">后台管理</a> 添加基金</p>
+                        </div>
+                    </td></tr>`;
+                return;
+            }
+
+            let html = '';
+            funds.forEach(f => {
+                const nav = f.nav || 0;
+                const estNav = f.estimated_nav || 0;
+                const estChange = f.estimated_change_rate || 0;
+                const price = f.trade_price || 0;
+                const premium = f.premium_rate || 0;
+                const tradeAmount = f.trade_amount || 0;
+                const category = f.category || 'domestic';
+
+                let premiumClass = 'premium-zero';
+                if (premium > 0) premiumClass = 'premium-positive';
+                else if (premium < 0) premiumClass = 'premium-negative';
+
+                const estChangeClass = estChange > 0 ? 'up' : estChange < 0 ? 'down' : 'neutral';
+                const estChangeText = estChange > 0 ? `+${estChange.toFixed(2)}%` : `${estChange.toFixed(2)}%`;
+
+                const purchaseClass = (f.purchase_status === '开放') ? 'status-open' : (f.purchase_status === '限大额') ? 'status-limited' : 'status-closed';
+                const redeemClass = (f.redeem_status === '开放') ? 'status-open' : 'status-closed';
+
+                const catLabel = CATEGORY_LABELS[category] || '国内';
+                const catCss = CATEGORY_CSS[category] || 'cat-domestic';
+                const catBadge = `<span class="cat-badge ${catCss}">${catLabel}</span>`;
+
+                let detailCell = '';
+                if (f.algo_type === 'industry' && f.industry_index_code) {
+                    const idxName = f.index_name || f.industry_index_code;
+                    detailCell = `<span class="algo-indicator industry"><span class="algo-icon"></span> <span class="algo-label">${idxName}</span></span>`;
+                } else if (f.algo_type === 'overseas') {
+                    const usIdxName = f.us_index_name || f.us_index_code || '美股';
+                    const periodLabel = f.overseas_period ? `时段${f.overseas_period}` : '';
+                    const cnR = f.cn_ratio || 0;
+                    const usR = f.us_ratio || 0;
+                    let ratioText = '';
+                    if (cnR > 0 && usR > 0) ratioText = ` A${Math.round(cnR)}%+美${Math.round(usR)}%`;
+                    else if (usR > 0) ratioText = ` 美${Math.round(usR)}%`;
+                    detailCell = `<span class="algo-indicator overseas"><span class="algo-icon"></span> <span class="algo-label">🇺🇸${usIdxName}</span></span>`;
+                    if (ratioText) detailCell += `<span class="period-tag" style="background:rgba(93,170,82,0.15);color:#5daa52">${ratioText}</span>`;
+                    if (periodLabel) detailCell += `<span class="period-tag">${periodLabel}</span>`;
+                }
+                if (f.model_version) {
+                    const methodLabel = f.valuation_method || '估值模型';
+                    const confidence = f.valuation_confidence ? ` · 置信${Math.round(f.valuation_confidence * 100)}%` : '';
+                    const note = (f.valuation_note || f.model_version).replace(/"/g, '&quot;');
+                    detailCell += `<span class="period-tag" title="${note}">${methodLabel}${confidence}</span>`;
+                }
+                detailCell += ` <span class="holdings-toggle" onclick="toggleHoldings('${f.fund_code}', this)"><span class="arrow">▶</span> 查看持仓</span>`;
+
+                html += `
+                    <tr data-code="${f.fund_code}">
+                        <td><span class="fund-code">${f.fund_code}</span></td>
+                        <td><span class="fund-name" title="${f.fund_name}">${f.fund_name}</span></td>
+                        <td>${catBadge}</td>
+                        <td class="num">${nav > 0 ? nav.toFixed(4) : '--'}</td>
+                        <td class="num ${estChangeClass}">${estNav > 0 ? estNav.toFixed(4) : '--'}</td>
+                        <td class="num ${estChangeClass}">${estNav > 0 ? estChangeText : '--'}</td>
+                        <td class="num">${price > 0 ? price.toFixed(3) : '--'}</td>
+                        <td class="num">${tradeAmount > 0 ? (tradeAmount / 10000).toFixed(0) : '--'}</td>
+                        <td><span class="${premiumClass}">${premium !== 0 ? (premium > 0 ? '+' : '') + premium.toFixed(2) + '%' : '--'}</span></td>
+                        <td><span class="status-tag ${purchaseClass}">${f.purchase_status}</span></td>
+                        <td><span class="status-tag ${redeemClass}">${f.redeem_status}</span></td>
+                        <td class="num">${f.yesterday_purchase_shares > 0 ? (f.yesterday_purchase_shares / 100000000).toFixed(2) : '--'}</td>
+                        <td>${detailCell}</td>
+                    </tr>
+                    <tr class="holdings-row" id="holdings-${f.fund_code}" style="display:none"><td colspan="13"><div class="holdings-panel" id="panel-${f.fund_code}"><div class="loading"><div class="spinner"></div></div></div></td></tr>`;
+            });
+            tbody.innerHTML = html;
+        }
+
+        function renderCards(funds) {
+            const container = document.getElementById('fundCards');
+            document.getElementById('fundCount').textContent = `共 ${funds.length} 只基金`;
+
+            if (funds.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">📭</div>
+                        <p>暂无监控基金</p>
+                        <p>请前往 <a href="/admin">后台管理</a> 添加基金</p>
+                    </div>`;
+                return;
+            }
+
+            let html = '';
+            funds.forEach(f => {
+                const nav = f.nav || 0;
+                const estNav = f.estimated_nav || 0;
+                const estChange = f.estimated_change_rate || 0;
+                const price = f.trade_price || 0;
+                const premium = f.premium_rate || 0;
+                const tradeAmount = f.trade_amount || 0;
+                const category = f.category || 'domestic';
+
+                let premiumClass = 'premium-zero', premiumStyle = '';
+                if (premium > 0) { premiumClass = 'premium-positive'; premiumStyle = 'color:#e8654a;background:rgba(232,101,74,0.1)'; }
+                else if (premium < 0) { premiumClass = 'premium-negative'; premiumStyle = 'color:#3da88e;background:rgba(61,168,142,0.1)'; }
+
+                const estChangeClass = estChange > 0 ? 'up' : estChange < 0 ? 'down' : 'neutral';
+                const estChangeText = estChange > 0 ? `+${estChange.toFixed(2)}%` : `${estChange.toFixed(2)}%`;
+
+                const purchaseClass = (f.purchase_status === '开放') ? 'status-open' : (f.purchase_status === '限大额') ? 'status-limited' : 'status-closed';
+                const redeemClass = (f.redeem_status === '开放') ? 'status-open' : 'status-closed';
+
+                const catLabel = CATEGORY_LABELS[category] || '国内';
+                const catCss = CATEGORY_CSS[category] || 'cat-domestic';
+
+                let algoInfo = '';
+                if (f.algo_type === 'industry' && f.industry_index_code) {
+                    algoInfo = f.index_name || f.industry_index_code;
+                } else if (f.algo_type === 'overseas') {
+                    algoInfo = '🇺🇸' + (f.us_index_name || f.us_index_code || '美股');
+                }
+                if (f.model_version) {
+                    const methodLabel = f.valuation_method || '估值模型';
+                    const confidence = f.valuation_confidence ? ` · 置信${Math.round(f.valuation_confidence * 100)}%` : '';
+                    algoInfo = `${methodLabel}${confidence}`;
+                }
+
+                const premiumText = premium !== 0 ? (premium > 0 ? '+' : '') + premium.toFixed(2) + '%' : '--';
+
+                html += `
+                <div class="fund-card" data-code="${f.fund_code}">
+                    <div class="fund-card-header">
+                        <div class="left-info">
+                            <span class="fund-code">${f.fund_code}</span>
+                            <span class="fund-name">${f.fund_name}</span>
+                            <span class="cat-badge ${catCss}">${catLabel}</span>
+                        </div>
+                        <span class="premium-badge" style="${premiumStyle}">${premiumText}</span>
+                    </div>
+                    <div class="fund-card-body">
+                        <div class="fund-card-field">
+                            <span class="label">单位净值</span>
+                            <span class="value">${nav > 0 ? nav.toFixed(4) : '--'}</span>
+                        </div>
+                        <div class="fund-card-field">
+                            <span class="label">估算净值</span>
+                            <span class="value ${estChangeClass}">${estNav > 0 ? estNav.toFixed(4) : '--'}</span>
+                        </div>
+                        <div class="fund-card-field">
+                            <span class="label">估算涨跌</span>
+                            <span class="value ${estChangeClass}">${estNav > 0 ? estChangeText : '--'}</span>
+                        </div>
+                        <div class="fund-card-field">
+                            <span class="label">交易价格</span>
+                            <span class="value">${price > 0 ? price.toFixed(3) : '--'}</span>
+                        </div>
+                        <div class="fund-card-field">
+                            <span class="label">折溢价率</span>
+                            <span class="value" style="${premiumStyle}">${premiumText}</span>
+                        </div>
+                        <div class="fund-card-field">
+                            <span class="label">${algoInfo || '算法'}</span>
+                            <span class="value" style="font-size:11px;color:#a89a8c">${f.algo_type === 'holdings' ? '持仓估值' : algoInfo}</span>
+                        </div>
+                    </div>
+                    <div class="fund-card-footer">
+                        <div class="status-row">
+                            <span class="status-tag ${purchaseClass}">申购${f.purchase_status}</span>
+                            <span class="status-tag ${redeemClass}">赎回${f.redeem_status}</span>
+                        </div>
+                        <span class="holdings-toggle" onclick="toggleCardHoldings('${f.fund_code}', this)"><span class="arrow">▶</span> 持仓</span>
+                    </div>
+                    <div class="holdings-panel" id="card-panel-${f.fund_code}"></div>
+                </div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        async function toggleHoldings(code, el) {
+            const row = document.getElementById(`holdings-${code}`);
+            const panel = document.getElementById(`panel-${code}`);
+            const isVisible = row.style.display !== 'none';
+
+            if (isVisible) {
+                row.style.display = 'none';
+                panel.classList.remove('show');
+                el.classList.remove('expanded');
+                return;
+            }
+
+            row.style.display = '';
+            panel.classList.add('show');
+            el.classList.add('expanded');
+
+            if (panel.querySelector('.spinner')) {
+                await loadHoldings(code, panel);
+            }
+        }
+
+        async function toggleCardHoldings(code, el) {
+            const panel = document.getElementById(`card-panel-${code}`);
+            const isVisible = panel.classList.contains('show');
+
+            if (isVisible) {
+                panel.classList.remove('show');
+                el.classList.remove('expanded');
+                return;
+            }
+
+            panel.classList.add('show');
+            el.classList.add('expanded');
+
+            if (!panel.innerHTML || panel.querySelector('.spinner')) {
+                await loadHoldings(code, panel);
+            }
+        }
+
+        async function loadHoldings(code, panel) {
+            panel.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const resp = await fetch(`/api/funds/${code}`);
+                const json = await resp.json();
+                if (json.code === 0) {
+                    const data = json.data;
+                    let html = '';
+                    if (data.holdings && data.holdings.length > 0) {
+                        html += renderHoldingsHTML(data.holdings, '国内持仓');
+                    }
+                    if (data.overseas_holdings && data.overseas_holdings.length > 0) {
+                        // Show appropriate title for HK vs overseas holdings
+                        const holdingsTitle = data.category === 'hk' ? '港股持仓' : '境外持仓';
+                        html += renderOverseasHoldingsHTML(data.overseas_holdings, holdingsTitle);
+                    }
+                    if (html) {
+                        panel.innerHTML = html;
+                    } else if (data.category === 'hk') {
+                        panel.innerHTML = '<p style="color:#6d5f53;padding:10px;font-size:13px">该港股基金暂无持仓数据，可能未到报告期或数据源未披露</p>';
+                    } else if (data.category === 'overseas' || data.algo_type === 'overseas') {
+                        // Provide specific message for different types of overseas funds
+                        const usIdx = data.us_index_code || '';
+                        const isCommodity = usIdx.includes('GC00Y') || usIdx.includes('CL00Y') || usIdx.includes('SI00Y');
+                        if (isCommodity) {
+                            panel.innerHTML = '<p style="color:#6d5f53;padding:10px;font-size:13px">该基金为商品/期货基金，主要持有期货合约而非个股，无法获取持仓明细</p>';
+                        } else {
+                            panel.innerHTML = '<p style="color:#6d5f53;padding:10px;font-size:13px">该基金暂无持仓数据，可能未到报告期或数据源未披露</p>';
+                        }
+                    } else {
+                        panel.innerHTML = '<p style="color:#6d5f53;padding:10px;font-size:13px">暂无持仓数据</p>';
+                    }
+                } else {
+                    panel.innerHTML = '<p style="color:#6d5f53;padding:10px;font-size:13px">暂无持仓数据</p>';
+                }
+            } catch (e) {
+                panel.innerHTML = '<p style="color:#e8654a;padding:10px;font-size:13px">加载失败</p>';
+            }
+        }
+
+        function renderHoldingsHTML(holdings, title) {
+            if (!holdings || holdings.length === 0) return '';
+            let html = `<div style="margin-bottom:12px"><div style="color:#d4956a;font-size:13px;font-weight:500;margin-bottom:8px">📊 ${title}</div><table><thead><tr><th>序号</th><th>股票代码</th><th>股票名称</th><th>占净值比例</th><th>持股数(万股)</th><th>持仓市值(万元)</th><th>报告期</th></tr></thead><tbody>`;
+            holdings.forEach((h, i) => {
+                html += `<tr><td>${i + 1}</td><td class="fund-code" style="font-size:12px">${h.stock_code}</td><td>${h.stock_name}</td><td class="num">${h.holding_ratio.toFixed(2)}%</td><td class="num">${h.shares > 0 ? formatNumber(h.shares) : '--'}</td><td class="num">${h.market_value > 0 ? formatNumber(h.market_value) : '--'}</td><td style="color:#6d5f53;font-size:12px">${h.report_date || '--'}</td></tr>`;
+            });
+            html += '</tbody></table></div>';
+            return html;
+        }
+
+        function renderOverseasHoldingsHTML(holdings, title) {
+            if (!holdings || holdings.length === 0) return '';
+            title = title || '境外持仓';
+            const icon = title === '港股持仓' ? '🇭🇰' : '🌏';
+            const titleColor = title === '港股持仓' ? '#d4a056' : '#b87a8a';
+            let html = `<div><div style="color:${titleColor};font-size:13px;font-weight:500;margin-bottom:8px">${icon} ${title}</div><table><thead><tr><th>序号</th><th>股票代码</th><th>股票名称</th><th>占净值比例</th><th>EM代码</th><th>报告期</th></tr></thead><tbody>`;
+            holdings.forEach((h, i) => {
+                html += `<tr><td>${i + 1}</td><td class="fund-code" style="font-size:12px">${h.stock_code}</td><td>${h.stock_name}</td><td class="num">${h.holding_ratio.toFixed(2)}%</td><td style="color:#6d5f53;font-size:12px">${h.em_code || '--'}</td><td style="color:#6d5f53;font-size:12px">${h.report_date || '--'}</td></tr>`;
+            });
+            html += '</tbody></table></div>';
+            return html;
+        }
+
+        function formatNumber(num) {
+            if (num >= 100000000) return (num / 100000000).toFixed(2) + '亿';
+            if (num >= 10000) return (num / 10000).toFixed(2) + '万';
+            return num.toFixed(2);
+        }
+
+        async function updateTradingStatus() {
+            try {
+                const resp = await fetch('/api/trading-status');
+                const json = await resp.json();
+                if (json.code === 0) {
+                    const statusEl = document.getElementById('tradingStatus');
+                    const cn = json.data.is_trading;
+                    const us = json.data.is_us_trading;
+                    if (cn) {
+                        statusEl.className = 'trading-status open';
+                        statusEl.innerHTML = '<span class="pulse-dot green"></span>A股交易中';
+                    } else if (us) {
+                        statusEl.className = 'trading-status open';
+                        statusEl.innerHTML = '<span class="pulse-dot green"></span>美股交易中';
+                    } else {
+                        statusEl.className = 'trading-status closed';
+                        statusEl.innerHTML = '<span class="pulse-dot gray"></span>休市';
+                    }
+                    document.getElementById('updateTime').textContent = json.data.current_time;
+                    resetCountdown(cn || us);
+                }
+            } catch (e) {}
+        }
+
+        function openWechatPanel() { document.getElementById('wechatOverlay').classList.add('show'); loadWechatConfig(); }
+        function closeWechatPanel() { document.getElementById('wechatOverlay').classList.remove('show'); }
+        async function loadWechatConfig() {
+            try {
+                const resp = await fetch('/api/wechat'); const json = await resp.json();
+                if (json.code === 0) {
+                    const c = json.data;
+                    document.getElementById('sendKey').value = c.send_key || '';
+                    document.getElementById('maskedKey').textContent = c.masked_key || '未配置';
+                    document.getElementById('pushEnabled').checked = c.push_enabled == 1;
+                    document.getElementById('pushTime').value = c.push_time || '08:00,20:00';
+                    document.getElementById('premiumAlertEnabled').checked = c.premium_alert_enabled == 1;
+                    document.getElementById('premiumUpper').value = (c.premium_upper !== undefined && c.premium_upper !== null) ? c.premium_upper : 3.0;
+                    document.getElementById('discountAlertEnabled').checked = c.discount_alert_enabled == 1;
+                    document.getElementById('discountLower').value = (c.discount_lower !== undefined && c.discount_lower !== null) ? c.discount_lower : -5.0;
+                    document.getElementById('minTurnover').value = (c.min_turnover !== undefined && c.min_turnover !== null) ? c.min_turnover : 60;
+                    toggleTimeInput(); togglePremiumInputs(); toggleDiscountInputs();
+                }
+            } catch (e) {}
+        }
+        function isWechatScheduledAlertEnabled() {
+            return document.getElementById('pushEnabled').checked;
+        }
+        function toggleTimeInput() { document.getElementById('timeInputRow').style.display = isWechatScheduledAlertEnabled() ? 'flex' : 'none'; }
+        function togglePremiumInputs() { document.getElementById('premiumInputs').style.display = document.getElementById('premiumAlertEnabled').checked ? 'flex' : 'none'; }
+        function toggleDiscountInputs() { document.getElementById('discountInputs').style.display = document.getElementById('discountAlertEnabled').checked ? 'flex' : 'none'; }
+        function showWechatToast(msg, type) {
+            const toast = document.getElementById('wechatToast'); toast.textContent = msg; toast.className = 'toast show ' + type;
+            setTimeout(() => { toast.className = 'toast'; }, 4000);
+        }
+        function numberOrDefault(id, fallback) {
+            const value = parseFloat(document.getElementById(id).value);
+            return Number.isFinite(value) ? value : fallback;
+        }
+        async function saveWechatConfig() {
+            const config = {
+                send_key: document.getElementById('sendKey').value.trim(),
+                push_enabled: document.getElementById('pushEnabled').checked ? 1 : 0,
+                push_time: document.getElementById('pushTime').value.trim(),
+                premium_alert_enabled: document.getElementById('premiumAlertEnabled').checked ? 1 : 0,
+                premium_upper: numberOrDefault('premiumUpper', 3.0),
+                premium_lower: numberOrDefault('discountLower', -5.0),
+                discount_alert_enabled: document.getElementById('discountAlertEnabled').checked ? 1 : 0,
+                discount_lower: numberOrDefault('discountLower', -5.0),
+                min_turnover: numberOrDefault('minTurnover', 60),
+            };
+            try {
+                const resp = await fetch('/api/wechat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+                const json = await resp.json();
+                showWechatToast(json.code === 0 ? 'OK: ' + (json.msg || '设置已保存') : 'ERR: ' + json.msg, json.code === 0 ? 'success' : 'error');
+                if (json.code === 0) loadWechatConfig();
+            } catch (e) { showWechatToast('ERR: ' + e.message, 'error'); }
+        }
+        async function manualRefresh() {
+            const btn = document.getElementById('refreshBtn');
+            btn.disabled = true;
+            btn.textContent = '🔄 更新中...';
+            try {
+                await fetch('/api/update', { method: 'POST' });
+                await fetchFunds();
+            } catch (e) {
+                console.error(e);
+            }
+            btn.disabled = false;
+            btn.textContent = '🔄 刷新';
+        }
+
+        // Initial load
+        fetchFunds();
+        updateTradingStatus();
+
+        let countdownSeconds = 0;
+        function updateCountdown() {
+            const el = document.getElementById('nextRefresh');
+            if (countdownSeconds > 0) {
+                const min = Math.floor(countdownSeconds / 60);
+                const sec = countdownSeconds % 60;
+                el.textContent = min > 0 ? `${min}分${sec}秒` : `${sec}秒`;
+                countdownSeconds--;
+            } else {
+                el.textContent = '';
+            }
+        }
+
+        function resetCountdown(isTrading) {
+            countdownSeconds = isTrading ? 300 : 1800;
+        }
+
+        autoRefreshTimer = setInterval(() => {
+            fetchFunds();
+            updateTradingStatus();
+        }, 60000);
+
+        setInterval(updateCountdown, 1000);
+    </script>
+</body>
+</html>
