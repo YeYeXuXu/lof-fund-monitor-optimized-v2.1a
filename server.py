@@ -36,6 +36,7 @@ logger.setLevel(logging.INFO)
 # Suppress noisy third-party loggers (aiohttp, asyncio, etc.)
 for noisy_logger in ['aiohttp.access', 'aiohttp.client', 'aiohttp.internal', 'aiohttp.server', 'aiohttp.web', 'aiohttp.handler', 'asyncio']:
     logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+logging.getLogger('akshare_fund_adapter').setLevel(logging.INFO)
 
 # China Standard Time
 CST = timezone(timedelta(hours=8))
@@ -76,6 +77,17 @@ def _describe_fund_data_sources(data: dict) -> str:
         f"折溢价={premium_source}; "
         f"申赎状态={status_source}"
     )
+
+
+def _format_seconds(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}小时{minutes}分钟"
+    if minutes:
+        return f"{minutes}分钟{sec}秒"
+    return f"{sec}秒"
 
 
 # DuckDNS dynamic DNS configuration (defaults, can be overridden via API)
@@ -321,8 +333,8 @@ async def _apply_valuation_model(session: aiohttp.ClientSession, fund: dict, dat
 
     AkShare official spot IOPV has priority when available: in AkShare
     ``fund_etf_spot_em`` f441 is ``IOPV实时估值`` and f402 is the signed
-    ``基金折价率`` value.  The same f402 value is used as the monitor's
-    premium/discount rate for display and WeChat filtering.
+    ``基金折价率`` value.  The adapter normalizes f402 to the monitor's
+    signed convention: positive = 溢价, negative = 折价.
     """
     iopv = data.get("iopv_estimated_nav", 0) or 0
     try:
@@ -337,10 +349,10 @@ async def _apply_valuation_model(session: aiohttp.ClientSession, fund: dict, dat
         if data.get("akshare_premium_rate") is not None:
             data["premium_rate"] = round(float(data.get("akshare_premium_rate") or 0), 2)
             data["premium_source"] = data.get("akshare_source") or "akshare.fund_etf_spot_em:f402"
-        data["model_version"] = "净值估值模型优化v1.8a"
+        data["model_version"] = "净值估值模型优化v1.9a"
         data["valuation_method"] = "akshare_fund_etf_spot_em_iopv"
         data["valuation_confidence"] = 0.9
-        data["valuation_note"] = "优先使用 AkShare fund_etf_spot_em：f441=IOPV实时估值；f402=基金折价率/溢价率同一值"
+        data["valuation_note"] = "优先使用 AkShare fund_etf_spot_em：f441=IOPV实时估值；f402 已按正数=溢价、负数=折价归一化"
         return
 
     est = await estimate_nav_unified(session, fund, data)
@@ -417,18 +429,31 @@ async def update_single_fund(fund_code: str, market: str = "sz"):
 async def update_all_funds():
     """Update all fund data from APIs."""
     if update_lock.locked():
-        logger.info("Update already in progress, skipping")
+        logger.info("Data refresh skipped: another refresh is already in progress")
         return
 
     async with update_lock:
         funds = await get_all_funds()
         if not funds:
-            logger.info("No funds to update")
+            logger.info("Data refresh skipped: no funds to update")
             return
+
+        started = asyncio.get_event_loop().time()
+        updated_count = 0
+        failed_count = 0
+        akshare_snapshot = {}
+        logger.info("Data refresh started: funds=%s, current_time=%s", len(funds), datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S"))
 
         try:
             async with aiohttp.ClientSession() as session:
                 akshare_snapshot = await get_akshare_fund_snapshot(session, max_age_seconds=60)
+                logger.info(
+                    "Data refresh AkShare snapshot: spot=%s estimation=%s purchase_status=%s fetched_at=%s",
+                    len(akshare_snapshot.get("spot") or {}),
+                    len(akshare_snapshot.get("estimation") or {}),
+                    len(akshare_snapshot.get("purchase_status") or {}),
+                    akshare_snapshot.get("fetched_at", ""),
+                )
                 for fund in funds:
                     if shutdown_event.is_set():
                         break
@@ -454,6 +479,7 @@ async def update_all_funds():
                                 data["premium_source"] = "calculated_from_nav_and_trade_price"
 
                         await save_realtime(fund_code, data)
+                        updated_count += 1
 
                         logger.info(
                             "Updated fund %s: NAV=%s, Price=%s, Premium=%s%%, Source=[%s]",
@@ -465,11 +491,23 @@ async def update_all_funds():
                         )
 
                     except Exception as e:
+                        failed_count += 1
                         logger.error(f"Error updating fund {fund.get('fund_code')}: {e}")
 
                     await asyncio.sleep(0.05)
         except Exception as e:
+            failed_count = len(funds) - updated_count
             logger.error(f"Error in update_all_funds: {e}")
+        finally:
+            elapsed = asyncio.get_event_loop().time() - started
+            logger.info(
+                "Data refresh completed: updated=%s failed=%s total=%s elapsed=%s akshare_fetched_at=%s",
+                updated_count,
+                failed_count,
+                len(funds),
+                _format_seconds(elapsed),
+                (akshare_snapshot or {}).get("fetched_at", ""),
+            )
 
 
 async def _fetch_fund_data_with_session(
@@ -648,38 +686,60 @@ async def periodic_update():
     During trading hours, estimated NAV is recalculated based on real-time
     holdings/index change rates, and the premium/discount rate is recomputed.
     """
-    last_trading_update = 0
-    last_non_trading_update = 0
+    last_trading_update = 0.0
+    last_non_trading_update = 0.0
+    last_status_log = 0.0
+    last_mode = ""
     while not shutdown_event.is_set():
         try:
-            now = asyncio.get_event_loop().time()
+            loop_now = asyncio.get_event_loop().time()
             cn_trading = is_trading_time()
             us_trading = is_us_trading_time()
 
             if cn_trading:
-                # A-share trading hours: update every 5 minutes
-                if now - last_trading_update >= TRADING_REFRESH_INTERVAL_SECONDS:
-                    logger.info("A-share trading time - updating fund data (5min cycle)...")
-                    await update_all_funds()
-                    last_trading_update = now
-                else:
-                    logger.debug("A-share trading - waiting for next 5min cycle")
+                mode = "A股交易时段"
+                interval = TRADING_REFRESH_INTERVAL_SECONDS
+                last_update = last_trading_update
             elif us_trading:
-                # US market trading hours: update every 5 minutes
-                if now - last_trading_update >= TRADING_REFRESH_INTERVAL_SECONDS:
-                    logger.info("US market trading time - updating fund data (5min cycle)...")
-                    await update_all_funds()
-                    last_trading_update = now
-                else:
-                    logger.debug("US trading - waiting for next 5min cycle")
+                mode = "美股交易时段"
+                interval = TRADING_REFRESH_INTERVAL_SECONDS
+                last_update = last_trading_update
             else:
-                # Non-trading: update every 30 minutes (1800 seconds)
-                if now - last_non_trading_update >= NON_TRADING_REFRESH_INTERVAL_SECONDS:
-                    logger.info("Non-trading time - performing periodic update (30min cycle)...")
-                    await update_all_funds()
-                    last_non_trading_update = now
+                mode = "非交易时段"
+                interval = NON_TRADING_REFRESH_INTERVAL_SECONDS
+                last_update = last_non_trading_update
+
+            due = last_update <= 0 or loop_now - last_update >= interval
+            if due:
+                logger.info(
+                    "Data refresh scheduler: mode=%s, interval=%s, refreshing now; WeChat scheduler remains independent",
+                    mode,
+                    _format_seconds(interval),
+                )
+                await update_all_funds()
+                completed_at = asyncio.get_event_loop().time()
+                if cn_trading or us_trading:
+                    last_trading_update = completed_at
                 else:
-                    logger.debug("Not trading time - skipping update")
+                    last_non_trading_update = completed_at
+                last_status_log = completed_at
+                last_mode = mode
+                logger.info(
+                    "Data refresh scheduler: mode=%s, next refresh in %s; WeChat scheduler remains independent",
+                    mode,
+                    _format_seconds(interval),
+                )
+            else:
+                seconds_until = interval - (loop_now - last_update)
+                if mode != last_mode or loop_now - last_status_log >= 300:
+                    logger.info(
+                        "Data refresh scheduler: mode=%s, next refresh in %s, last refresh %.1f minutes ago; WeChat scheduler remains independent",
+                        mode,
+                        _format_seconds(seconds_until),
+                        (loop_now - last_update) / 60.0,
+                    )
+                    last_status_log = loop_now
+                    last_mode = mode
         except Exception as e:
             logger.error(f"Error in periodic update: {e}")
 
@@ -935,6 +995,13 @@ def _safe_int(value, default: int) -> int:
         return default
 
 
+def _wechat_akshare_overlay_timeout() -> float:
+    try:
+        return max(1.0, float(os.environ.get("WECHAT_AKSHARE_OVERLAY_TIMEOUT", "5") or 5))
+    except ValueError:
+        return 5.0
+
+
 def _parse_push_times(push_time: str) -> list[str]:
     """Parse comma/space separated HH:MM values into sorted unique canonical times."""
     if not push_time:
@@ -1119,6 +1186,41 @@ def _collect_threshold_alerts(funds: list, config: dict) -> tuple[list, list]:
     return alerts, conditions
 
 
+def _status_is_paused(value: object) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    return any(keyword in text for keyword in ("暂停", "停止", "不可", "封闭"))
+
+
+def _conditions_from_alerts(alerts: list[dict]) -> list[str]:
+    conditions: list[str] = []
+    for item in alerts:
+        threshold_type = item.get("threshold_type")
+        if threshold_type and threshold_type not in conditions:
+            conditions.append(threshold_type)
+    return conditions
+
+
+def _filter_alerts_by_subscription_status(alerts: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """Filter WeChat alerts by actionability.
+
+    Premium opportunities require subscription to be available; discount
+    opportunities require redemption to be available.  Unknown statuses are kept
+    so a temporary status miss does not hide potentially actionable alerts.
+    """
+    kept: list[dict] = []
+    removed = {"premium_purchase_paused": 0, "discount_redeem_paused": 0}
+    for item in alerts:
+        threshold_type = item.get("threshold_type")
+        if threshold_type == "premium_upper" and _status_is_paused(item.get("purchase_status")):
+            removed["premium_purchase_paused"] += 1
+            continue
+        if threshold_type == "discount_lower" and _status_is_paused(item.get("redeem_status")):
+            removed["discount_redeem_paused"] += 1
+            continue
+        kept.append(item)
+    return kept, removed
+
+
 def _describe_wechat_filters(config: dict) -> str:
     """Build a compact Chinese description of the active push filters."""
     values = _wechat_filter_values(config)
@@ -1141,7 +1243,7 @@ def _format_push_percent(value: float) -> str:
 
 
 def _build_threshold_alert_title(values: dict, conditions: list) -> str:
-    """Build the only scheduled WeChat push title for v1.8a.
+    """Build the only scheduled WeChat push title for v1.9a.
 
     Example: LOF折溢价告警 溢价3% 成交60万
     """
@@ -1207,7 +1309,10 @@ async def check_threshold_alerts(config: dict = None) -> dict:
         # cycle at the configured push minute.
         try:
             async with aiohttp.ClientSession() as session:
-                akshare_snapshot = await get_akshare_fund_snapshot(session, max_age_seconds=60)
+                akshare_snapshot = await asyncio.wait_for(
+                    get_akshare_fund_snapshot(session, max_age_seconds=60, prefer_cached=True),
+                    timeout=_wechat_akshare_overlay_timeout(),
+                )
             logger.info(
                 "WeChat alert source overlay: AkShare spot=%s estimation=%s purchase_status=%s fetched_at=%s; stored_realtime=%s funds",
                 len(akshare_snapshot.get("spot") or {}),
@@ -1230,14 +1335,26 @@ async def check_threshold_alerts(config: dict = None) -> dict:
             return {"success": True, "sent": False, "msg": "没有基金满足告警筛选条件", "count": 0}
 
         await _ensure_alert_purchase_statuses(alerts)
+        alerts, removed_by_status = _filter_alerts_by_subscription_status(alerts)
+        removed_total = sum(removed_by_status.values())
+        if removed_total:
+            logger.info(
+                "WeChat alert status filter removed %s funds: premium_purchase_paused=%s discount_redeem_paused=%s",
+                removed_total,
+                removed_by_status["premium_purchase_paused"],
+                removed_by_status["discount_redeem_paused"],
+            )
+        if not alerts:
+            return {
+                "success": True,
+                "sent": False,
+                "msg": "满足阈值的基金均因申购/赎回暂停被过滤",
+                "count": 0,
+            }
 
-        enabled_conditions = []
-        if values["premium_enabled"]:
-            enabled_conditions.append("premium_upper")
-        if values["discount_enabled"]:
-            enabled_conditions.append("discount_lower")
+        enabled_conditions = _conditions_from_alerts(alerts)
 
-        # v1.8a: automatic WeChat push sends exactly one threshold-alert message
+        # v1.9a: automatic WeChat push sends exactly one threshold-alert message
         # with a compact title such as "LOF折溢价告警 溢价3% 折价-5% 成交60万".
         title = _build_threshold_alert_title(values, enabled_conditions)
         content = build_threshold_alert_message(
@@ -1263,7 +1380,7 @@ async def check_threshold_alerts(config: dict = None) -> dict:
 
 
 async def periodic_wechat_push():
-    """Automatic WeChat alert task for v1.8a.
+    """Automatic WeChat alert task for v1.9a.
 
     Strict rules:
     1. Only the configured push_time values are allowed to trigger a push.
@@ -1713,13 +1830,13 @@ async def api_save_wechat_config(request):
 
 
 async def api_test_wechat_push(request):
-    """v1.8a keeps this route as a no-op so no extra WeChat messages are sent."""
-    return web.json_response({"code": -1, "msg": "v1.8a 已取消测试推送；微信只在设置时间发送 1 条 LOF折溢价告警"})
+    """v1.9a keeps this route as a no-op so no extra WeChat messages are sent."""
+    return web.json_response({"code": -1, "msg": "v1.9a 已取消测试推送；微信只在设置时间发送 1 条 LOF折溢价告警"})
 
 
 async def api_send_summary_now(request):
-    """v1.8a removes summary pushes; keep this route as a safe no-op for compatibility."""
-    return web.json_response({"code": -1, "msg": "v1.8a 已取消汇总推送；自动微信推送只在设置时间发送 1 条 LOF折溢价告警"})
+    """v1.9a removes summary pushes; keep this route as a safe no-op for compatibility."""
+    return web.json_response({"code": -1, "msg": "v1.9a 已取消汇总推送；自动微信推送只在设置时间发送 1 条 LOF折溢价告警"})
 
 
 # ============ Static File Serving ============

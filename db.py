@@ -275,7 +275,7 @@ async def init_db():
             except Exception:
                 pass  # Column already exists
 
-        # v1.8a compatibility: older threshold alerts could be scheduled even
+        # v1.9a compatibility: older threshold alerts could be scheduled even
         # when push_enabled was 0. Preserve those existing alert schedules while
         # no longer allowing push_enabled to trigger any summary push.
         await db.execute("""

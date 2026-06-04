@@ -6,8 +6,8 @@ This module embeds the fund-information fetching approach used by
 
 Embedded AkShare methods:
 - ``fund_etf_spot_em``: EastMoney ETF spot list.  The project explicitly uses
-  f441 as ``IOPV实时估值`` and f402 as ``基金折价率``; the same f402 value is
-  also treated as the fund premium/discount rate used by alerts.
+  f441 as ``IOPV实时估值`` and f402 as ``基金折价率``.  f402 is
+  normalized into the monitor convention: positive = premium, negative = discount.
 - ``fund_lof_spot_em``: EastMoney LOF spot list.
 - ``fund_value_estimation_em``: EastMoney fund valuation list.
 - ``fund_purchase_em``: EastMoney/Tiantian batch purchase/redemption status.
@@ -37,6 +37,8 @@ AKSHARE_HTTP_TIMEOUT = max(3, int(os.environ.get("AKSHARE_FUND_HTTP_TIMEOUT", "8
 AKSHARE_HTTP_RETRIES = max(1, int(os.environ.get("AKSHARE_FUND_HTTP_RETRIES", "3") or 3))
 AKSHARE_RETRY_SLEEP_SECONDS = max(0.1, float(os.environ.get("AKSHARE_FUND_RETRY_SLEEP", "0.6") or 0.6))
 AKSHARE_PAGE_SIZE = max(100, int(os.environ.get("AKSHARE_FUND_PAGE_SIZE", "5000") or 5000))
+AKSHARE_ESTIMATION_SYMBOL_TIMEOUT = max(2.0, float(os.environ.get("AKSHARE_FUND_ESTIMATION_TIMEOUT", "5") or 5))
+
 
 HEADERS_QUOTE = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -121,6 +123,24 @@ FUND_VALUE_SYMBOL_MAP = {
     "场内交易基金": 9,
 }
 
+
+def _configured_estimation_symbols() -> tuple[str, ...]:
+    """Return AkShare valuation categories to fetch.
+
+    ``场内交易基金`` is useful but the EastMoney valuation endpoint can be slow
+    or unavailable in GitHub Actions.  Keep it enabled by default, but each
+    category is now independently time-boxed so one slow category cannot block
+    quotes, refreshes, or scheduled WeChat pushes.
+    """
+    raw = os.environ.get("AKSHARE_FUND_ESTIMATION_SYMBOLS", "LOF,场内交易基金,QDII")
+    symbols: list[str] = []
+    for part in re.split(r"[,，;；\s]+", raw or ""):
+        symbol = part.strip()
+        if symbol in FUND_VALUE_SYMBOL_MAP and symbol not in symbols:
+            symbols.append(symbol)
+    return tuple(symbols or ["LOF", "QDII"])
+
+
 _snapshot_cache: dict[str, Any] = {"snapshot": None, "ts": 0.0}
 _snapshot_lock = asyncio.Lock()
 
@@ -149,6 +169,31 @@ def _to_float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _signed_premium_rate(raw_rate: float | None, trade_price: float, reference_nav: float) -> float | None:
+    """Normalize AkShare/EastMoney f402 to positive premium, negative discount.
+
+    AkShare exposes f402 as ``基金折价率`` while the monitor's alert/filter
+    convention is ``(trade_price - reference_nav) / reference_nav * 100``.
+    Different pages may label the same field as 折价率/溢折率, so validate the
+    sign against price and IOPV when both are available.
+    """
+    if raw_rate is None:
+        return None
+    if trade_price > 0 and reference_nav > 0:
+        calculated = (trade_price - reference_nav) / reference_nav * 100
+        tolerance = max(0.08, abs(calculated) * 0.08)
+        if abs(raw_rate - calculated) <= tolerance:
+            return raw_rate
+        if abs((-raw_rate) - calculated) <= tolerance:
+            return -raw_rate
+        # If the remote field disagrees with price/IOPV, trust the directly
+        # computed value for the internal signed折溢价率 convention.
+        return calculated
+    # Without IOPV/reference NAV the sign of a field named 基金折价率 cannot be
+    # verified safely.  Leave it empty and let callers calculate from NAV later.
+    return None
 
 
 def _normalize_code(value: Any) -> str:
@@ -423,8 +468,9 @@ def _normalize_spot_rows(rows: list[dict[str, Any]], source_name: str) -> dict[s
         if not code:
             continue
         iopv = _to_float(row.get("f441"), 0.0)
-        discount_rate = _to_float_or_none(row.get("f402"))
+        raw_discount_rate = _to_float_or_none(row.get("f402"))
         trade_price = _to_float(row.get("f2"), 0.0)
+        premium_rate = _signed_premium_rate(raw_discount_rate, trade_price, iopv)
         change_amount = _to_float(row.get("f4"), 0.0)
         change_rate = _to_float(row.get("f3"), 0.0)
         spot = {
@@ -441,10 +487,12 @@ def _normalize_spot_rows(rows: list[dict[str, Any]], source_name: str) -> dict[s
             "low": _to_float(row.get("f16"), 0.0),
             "previous_close": _to_float(row.get("f18"), 0.0),
             "iopv_estimated_nav": iopv,
-            # f402 is explicitly mapped to 基金折价率 by AkShare.  The monitor uses
-            # the same signed value as the alert premium/discount rate.
-            "fund_discount_rate": discount_rate,
-            "premium_rate": discount_rate,
+            # AkShare names f402 基金折价率.  Keep the raw remote value for
+            # diagnostics, and expose premium_rate using the monitor convention:
+            # positive = 溢价, negative = 折价.
+            "fund_discount_rate": raw_discount_rate,
+            "fund_discount_rate_raw": raw_discount_rate,
+            "premium_rate": premium_rate,
             "data_date": _format_data_date(row.get("f297")),
             "quote_time": _format_timestamp_seconds(row.get("f124")),
             "source": source_name,
@@ -505,6 +553,7 @@ def _normalize_estimation_item(item: Any, data_meta: dict[str, Any], source_symb
 async def fetch_akshare_fund_value_estimation(
     session: aiohttp.ClientSession,
     symbol: str = "LOF",
+    warn_on_error: bool = True,
 ) -> dict[str, dict[str, Any]]:
     type_id = FUND_VALUE_SYMBOL_MAP.get(symbol, FUND_VALUE_SYMBOL_MAP["LOF"])
     params = {
@@ -527,7 +576,8 @@ async def fetch_akshare_fund_value_estimation(
                 result[normalized["fund_code"]] = normalized
         return result
     except Exception as exc:
-        logger.warning("AkShare adapter fund_value_estimation_em(%s) unavailable: %s", symbol, exc)
+        log_func = logger.warning if warn_on_error else logger.info
+        log_func("AkShare adapter fund_value_estimation_em(%s) skipped/unavailable: %s", symbol, exc)
         return {}
 
 
@@ -617,18 +667,43 @@ async def fetch_akshare_fund_purchase_status(
 
 async def fetch_akshare_estimation_snapshot(
     session: aiohttp.ClientSession,
-    symbols: Iterable[str] = ("LOF", "场内交易基金", "QDII"),
+    symbols: Iterable[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    tasks = [fetch_akshare_fund_value_estimation(session, symbol) for symbol in symbols]
+    symbols = tuple(symbols or _configured_estimation_symbols())
+
+    async def fetch_one(symbol: str) -> tuple[str, dict[str, dict[str, Any]]]:
+        try:
+            result = await asyncio.wait_for(
+                fetch_akshare_fund_value_estimation(session, symbol, warn_on_error=False),
+                timeout=AKSHARE_ESTIMATION_SYMBOL_TIMEOUT,
+            )
+            return symbol, result
+        except asyncio.TimeoutError:
+            logger.info(
+                "AkShare adapter fund_value_estimation_em(%s) timed out after %.1fs; optional valuation category skipped",
+                symbol,
+                AKSHARE_ESTIMATION_SYMBOL_TIMEOUT,
+            )
+            return symbol, {}
+        except Exception as exc:
+            logger.info("AkShare adapter fund_value_estimation_em(%s) skipped: %s", symbol, exc)
+            return symbol, {}
+
+    tasks = [fetch_one(symbol) for symbol in symbols]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     merged: dict[str, dict[str, Any]] = {}
+    counts: list[str] = []
     for result in results:
         if isinstance(result, Exception):
             logger.debug("AkShare estimation task failed: %s", result)
             continue
+        symbol, rows = result
+        counts.append(f"{symbol}={len(rows)}")
         # Later symbols only fill gaps; LOF-specific rows should keep priority.
-        for code, item in result.items():
+        for code, item in rows.items():
             merged.setdefault(code, item)
+    if counts:
+        logger.info("AkShare fund_value_estimation_em snapshot: %s; merged=%s", ", ".join(counts), len(merged))
     return merged
 
 
@@ -666,13 +741,28 @@ async def get_akshare_fund_snapshot(
     session: aiohttp.ClientSession,
     max_age_seconds: int | None = None,
     force: bool = False,
+    prefer_cached: bool = False,
 ) -> dict[str, Any]:
-    """Return a cached AkShare fund snapshot, refreshing it at most once per TTL."""
+    """Return a cached AkShare fund snapshot, refreshing it at most once per TTL.
+
+    ``prefer_cached=True`` is used by scheduled WeChat pushes: if a background
+    data refresh is already fetching AkShare, the push immediately uses stale
+    cached/stored data instead of waiting on the shared snapshot lock.
+    """
     ttl = AKSHARE_CACHE_TTL_SECONDS if max_age_seconds is None else max(0, int(max_age_seconds))
     now = time.time()
     cached = _snapshot_cache.get("snapshot")
     if cached and not force and ttl > 0 and now - float(_snapshot_cache.get("ts") or 0) <= ttl:
         return cached
+    if prefer_cached and not force and _snapshot_lock.locked():
+        if cached:
+            logger.info(
+                "AkShare snapshot refresh already running; using cached snapshot for non-blocking caller fetched_at=%s",
+                cached.get("fetched_at", ""),
+            )
+            return cached
+        logger.info("AkShare snapshot refresh already running; non-blocking caller uses stored realtime fallback")
+        return {"spot": {}, "etf_spot": {}, "lof_spot": {}, "estimation": {}, "purchase_status": {}, "fetched_at": ""}
 
     async with _snapshot_lock:
         now = time.time()
