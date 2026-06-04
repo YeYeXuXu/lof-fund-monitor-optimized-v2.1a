@@ -10,6 +10,7 @@ Embedded AkShare methods:
   also treated as the fund premium/discount rate used by alerts.
 - ``fund_lof_spot_em``: EastMoney LOF spot list.
 - ``fund_value_estimation_em``: EastMoney fund valuation list.
+- ``fund_purchase_em``: EastMoney/Tiantian batch purchase/redemption status.
 
 When any of these AkShare-derived endpoints is unavailable, callers keep using
 existing project-specific fallback methods.
@@ -21,6 +22,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Iterable
@@ -65,6 +67,7 @@ _LOF_SPOT_URLS = (
 )
 
 _FUND_VALUE_ESTIMATION_URL = "https://api.fund.eastmoney.com/FundGuZhi/GetFundGZList"
+_FUND_PURCHASE_STATUS_URL = "https://fund.eastmoney.com/Data/Fund_JJJZ_Data.aspx"
 
 _COMMON_CLIST_PARAMS = {
     "pn": "1",
@@ -186,6 +189,123 @@ def _format_timestamp_seconds(value: Any) -> str:
         return datetime.fromtimestamp(timestamp, CST).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return ""
+
+
+def _normalize_purchase_status(value: Any) -> str:
+    """Normalize EastMoney/AkShare purchase status for display and alerts."""
+    text = str(value or "").strip()
+    if not text or text in {"-", "--", "---", "None", "nan", "NaN"}:
+        return "未知"
+    compact = re.sub(r"\s+", "", text)
+    if any(keyword in compact for keyword in ("限大额", "限制大额", "大额限制", "暂停大额")):
+        return "限大额"
+    if any(keyword in compact for keyword in ("暂停申购", "停止申购", "不可申购", "封闭期", "认购期", "发行中")):
+        return "暂停"
+    if any(keyword in compact for keyword in ("开放申购", "申购开放", "可申购")):
+        return "开放"
+    if compact == "开放":
+        return "开放"
+    if any(keyword in compact for keyword in ("暂停", "停止", "不可", "封闭")) and "赎回" not in compact:
+        return "暂停"
+    return "未知"
+
+
+def _normalize_redeem_status(value: Any) -> str:
+    """Normalize EastMoney/AkShare redemption status for display and alerts."""
+    text = str(value or "").strip()
+    if not text or text in {"-", "--", "---", "None", "nan", "NaN"}:
+        return "未知"
+    compact = re.sub(r"\s+", "", text)
+    if any(keyword in compact for keyword in ("暂停赎回", "停止赎回", "不可赎回", "封闭期", "认购期", "发行中")):
+        return "暂停"
+    if any(keyword in compact for keyword in ("开放赎回", "赎回开放", "可赎回")):
+        return "开放"
+    if compact == "开放":
+        return "开放"
+    if any(keyword in compact for keyword in ("暂停", "停止", "不可", "封闭")) and "申购" not in compact:
+        return "暂停"
+    return "未知"
+
+
+def _status_is_known(value: Any) -> bool:
+    return str(value or "").strip() not in {"", "未知", "-", "--", "---"}
+
+
+def _extract_js_array_after_key(text: str, key: str) -> str:
+    """Extract a JSON-like array assigned to a JS object key.
+
+    EastMoney's Fund_JJJZ_Data.aspx response follows AkShare's
+    ``fund_purchase_em`` source but is returned as JavaScript such as
+    ``var reData={datas:[[...]],allRecords:...}`` rather than strict JSON.
+    This small scanner avoids adding demjson/pandas just for one array.
+    """
+    marker = f"{key}:"
+    start = text.find(marker)
+    if start < 0:
+        marker = f'"{key}":'
+        start = text.find(marker)
+    if start < 0:
+        return ""
+    pos = text.find("[", start + len(marker))
+    if pos < 0:
+        return ""
+
+    depth = 0
+    quote = ""
+    escape = False
+    for idx in range(pos, len(text)):
+        char = text[idx]
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return text[pos:idx + 1]
+    return ""
+
+
+def _decode_fund_purchase_rows(text: str) -> list[Any]:
+    """Decode the ``datas`` array from AkShare fund_purchase_em's endpoint."""
+    raw = (text or "").strip()
+    if raw.startswith("var reData="):
+        raw = raw[len("var reData="):].strip()
+    if raw.endswith(";"):
+        raw = raw[:-1].strip()
+
+    # Some deployments return proper JSON, while the public page usually returns
+    # a JavaScript object with unquoted keys.  Try strict JSON first, then extract
+    # the datas array from the JS object.
+    try:
+        parsed = json.loads(raw)
+        rows = parsed.get("datas", []) if isinstance(parsed, dict) else []
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        pass
+
+    array_text = _extract_js_array_after_key(raw, "datas")
+    if not array_text:
+        return []
+    try:
+        return json.loads(array_text)
+    except json.JSONDecodeError:
+        # The endpoint is normally double-quoted JSON inside the array.  This
+        # fallback handles rare single-quoted strings without executing JS.
+        try:
+            import ast
+            return ast.literal_eval(array_text)
+        except Exception:
+            return []
 
 
 def _rows_from_diff(diff: Any) -> list[dict[str, Any]]:
@@ -411,6 +531,90 @@ async def fetch_akshare_fund_value_estimation(
         return {}
 
 
+async def fetch_akshare_fund_purchase_status(
+    session: aiohttp.ClientSession,
+) -> dict[str, dict[str, Any]]:
+    """Fetch batch purchase/redemption statuses using AkShare fund_purchase_em.
+
+    Source method in AkShare v1.18.64:
+    ``akshare.fund.fund_em.fund_purchase_em`` ->
+    ``https://fund.eastmoney.com/Data/Fund_JJJZ_Data.aspx?t=8``.
+    """
+    params = {
+        "t": "8",
+        "page": "1,50000",
+        "js": "reData",
+        "sort": "fcode,asc",
+        "_": int(time.time() * 1000),
+    }
+    try:
+        last_error = ""
+        for attempt in range(1, AKSHARE_HTTP_RETRIES + 1):
+            try:
+                async with session.get(
+                    _FUND_PURCHASE_STATUS_URL,
+                    params=params,
+                    headers=HEADERS_FUND,
+                    timeout=aiohttp.ClientTimeout(total=AKSHARE_HTTP_TIMEOUT),
+                ) as resp:
+                    text = await resp.text()
+                    if resp.status != 200:
+                        last_error = f"HTTP {resp.status}: {text[:120]}"
+                        raise aiohttp.ClientResponseError(
+                            resp.request_info,
+                            resp.history,
+                            status=resp.status,
+                            message=text[:120],
+                            headers=resp.headers,
+                        )
+                    rows = _decode_fund_purchase_rows(text)
+                    if not rows:
+                        last_error = "empty datas"
+                        raise ValueError(last_error)
+                    result: dict[str, dict[str, Any]] = {}
+                    for row in rows:
+                        if isinstance(row, dict):
+                            code = _normalize_code(row.get("基金代码") or row.get("FCODE") or row.get("fcode") or row.get("code"))
+                            fund_name = str(row.get("基金简称") or row.get("SHORTNAME") or row.get("name") or "").strip()
+                            raw_purchase = row.get("申购状态") or row.get("purchase_status") or row.get("sgstat")
+                            raw_redeem = row.get("赎回状态") or row.get("redeem_status") or row.get("shstat")
+                        elif isinstance(row, (list, tuple)) and len(row) >= 7:
+                            # AkShare adds the sequence number after loading the
+                            # DataFrame; the raw endpoint starts with fund code.
+                            code = _normalize_code(row[0])
+                            fund_name = str(row[1] or "").strip()
+                            raw_purchase = row[5]
+                            raw_redeem = row[6]
+                        else:
+                            continue
+                        if not code:
+                            continue
+                        purchase_status = _normalize_purchase_status(raw_purchase)
+                        redeem_status = _normalize_redeem_status(raw_redeem)
+                        if not (_status_is_known(purchase_status) or _status_is_known(redeem_status)):
+                            continue
+                        result[code] = {
+                            "fund_code": code,
+                            "fund_name": fund_name,
+                            "purchase_status": purchase_status,
+                            "redeem_status": redeem_status,
+                            "raw_purchase_status": str(raw_purchase or "").strip(),
+                            "raw_redeem_status": str(raw_redeem or "").strip(),
+                            "source": "akshare.fund_purchase_em",
+                        }
+                    logger.info("AkShare adapter fund_purchase_em fetched %s status rows", len(result))
+                    return result
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                if attempt < AKSHARE_HTTP_RETRIES:
+                    await asyncio.sleep(AKSHARE_RETRY_SLEEP_SECONDS * attempt)
+                    continue
+                raise RuntimeError(last_error or "empty response")
+    except Exception as exc:
+        logger.warning("AkShare adapter fund_purchase_em unavailable: %s", exc)
+        return {}
+
+
 async def fetch_akshare_estimation_snapshot(
     session: aiohttp.ClientSession,
     symbols: Iterable[str] = ("LOF", "场内交易基金", "QDII"),
@@ -434,7 +638,10 @@ async def fetch_akshare_fund_snapshot(session: aiohttp.ClientSession) -> dict[st
     etf_task = fetch_akshare_etf_spot(session)
     lof_task = fetch_akshare_lof_spot(session)
     estimation_task = fetch_akshare_estimation_snapshot(session)
-    etf_spot, lof_spot, estimation = await asyncio.gather(etf_task, lof_task, estimation_task)
+    purchase_status_task = fetch_akshare_fund_purchase_status(session)
+    etf_spot, lof_spot, estimation, purchase_status = await asyncio.gather(
+        etf_task, lof_task, estimation_task, purchase_status_task
+    )
 
     # LOF rows provide broad LOF quote coverage; ETF rows override when f441/f402
     # official IOPV/discount fields are present.
@@ -444,12 +651,13 @@ async def fetch_akshare_fund_snapshot(session: aiohttp.ClientSession) -> dict[st
         "etf_spot": etf_spot,
         "lof_spot": lof_spot,
         "estimation": estimation,
+        "purchase_status": purchase_status,
         "fetched_at": datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S"),
         "elapsed_seconds": round(time.time() - started, 3),
     }
     logger.info(
-        "AkShare fund snapshot fetched: spot=%s (etf=%s lof=%s), estimation=%s, %.2fs",
-        len(spot), len(etf_spot), len(lof_spot), len(estimation), snapshot["elapsed_seconds"],
+        "AkShare fund snapshot fetched: spot=%s (etf=%s lof=%s), estimation=%s, purchase_status=%s, %.2fs",
+        len(spot), len(etf_spot), len(lof_spot), len(estimation), len(purchase_status), snapshot["elapsed_seconds"],
     )
     return snapshot
 
@@ -478,7 +686,7 @@ async def get_akshare_fund_snapshot(
             return snapshot
         except Exception as exc:
             logger.warning("AkShare fund snapshot refresh failed, using stale data if available: %s", exc)
-            return cached or {"spot": {}, "etf_spot": {}, "lof_spot": {}, "estimation": {}, "fetched_at": ""}
+            return cached or {"spot": {}, "etf_spot": {}, "lof_spot": {}, "estimation": {}, "purchase_status": {}, "fetched_at": ""}
 
 
 def get_fund_akshare_data(fund_code: str, snapshot: dict[str, Any] | None) -> dict[str, Any]:
@@ -486,7 +694,8 @@ def get_fund_akshare_data(fund_code: str, snapshot: dict[str, Any] | None) -> di
     snapshot = snapshot or {}
     spot = (snapshot.get("spot") or {}).get(code) or {}
     estimation = (snapshot.get("estimation") or {}).get(code) or {}
-    return {"spot": spot, "estimation": estimation}
+    purchase_status = (snapshot.get("purchase_status") or {}).get(code) or {}
+    return {"spot": spot, "estimation": estimation, "purchase_status": purchase_status}
 
 
 def apply_akshare_fund_data_to_result(
@@ -502,7 +711,18 @@ def apply_akshare_fund_data_to_result(
     data = get_fund_akshare_data(fund_code, snapshot)
     spot = data.get("spot") or {}
     estimation = data.get("estimation") or {}
+    purchase_status = data.get("purchase_status") or {}
     sources: list[str] = []
+
+    if purchase_status:
+        sources.append(purchase_status.get("source", "akshare.fund_purchase_em"))
+        if purchase_status.get("fund_name") and not result.get("fund_name"):
+            result["fund_name"] = purchase_status["fund_name"]
+        if _status_is_known(purchase_status.get("purchase_status")):
+            result["purchase_status"] = purchase_status["purchase_status"]
+        if _status_is_known(purchase_status.get("redeem_status")):
+            result["redeem_status"] = purchase_status["redeem_status"]
+        result["status_source"] = purchase_status.get("source", "akshare.fund_purchase_em")
 
     if estimation:
         sources.append(estimation.get("source", "akshare.fund_value_estimation_em"))

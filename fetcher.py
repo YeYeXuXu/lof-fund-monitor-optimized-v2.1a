@@ -354,64 +354,119 @@ async def fetch_stock_change_rate(session: aiohttp.ClientSession, em_code: str) 
     return 0.0
 
 
+def _normalize_purchase_status_text(value: str) -> str:
+    """Normalize raw purchase text to the compact status used by the UI/WeChat."""
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not text:
+        return "未知"
+    if any(keyword in text for keyword in ("限大额", "限制大额", "大额限制", "暂停大额")):
+        return "限大额"
+    if any(keyword in text for keyword in ("暂停申购", "停止申购", "不可申购", "封闭期", "认购期", "发行中")):
+        return "暂停"
+    if any(keyword in text for keyword in ("开放申购", "申购开放", "可申购")):
+        return "开放"
+    if text == "开放":
+        return "开放"
+    if any(keyword in text for keyword in ("暂停", "停止", "不可", "封闭")) and "赎回" not in text:
+        return "暂停"
+    return "未知"
+
+
+def _normalize_redeem_status_text(value: str) -> str:
+    """Normalize raw redemption text to the compact status used by the UI/WeChat."""
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not text:
+        return "未知"
+    if any(keyword in text for keyword in ("暂停赎回", "停止赎回", "不可赎回", "封闭期", "认购期", "发行中")):
+        return "暂停"
+    if any(keyword in text for keyword in ("开放赎回", "赎回开放", "可赎回")):
+        return "开放"
+    if text == "开放":
+        return "开放"
+    if any(keyword in text for keyword in ("暂停", "停止", "不可", "封闭")) and "申购" not in text:
+        return "暂停"
+    return "未知"
+
+
+def _status_known(value: str) -> bool:
+    return str(value or "").strip() not in {"", "未知", "-", "--", "---"}
+
+
 async def fetch_fund_purchase_status(session: aiohttp.ClientSession, fund_code: str) -> dict:
-    """Fetch fund purchase/redeem status from the F10 fee page (more reliable)."""
+    """Fetch fund purchase/redeem status from original EastMoney pages.
+
+    This remains the fallback path when the AkShare-compatible batch
+    ``fund_purchase_em`` endpoint is unavailable or lacks a fund row.
+    """
+    purchase_status = "未知"
+    redeem_status = "未知"
     try:
         url = f"http://fundf10.eastmoney.com/jjfl_{fund_code}.html"
         async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             text = await resp.text()
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(text, "lxml")
-            
-            purchase_status = "未知"
-            redeem_status = "未知"
-            
-            # Look for purchase/redeem status in the fee tables
+
+            # Look for purchase/redeem status in the fee tables.  Some pages put
+            # labels and values in different cells, so normalize the whole row.
             tables = soup.find_all("table")
             for table in tables:
                 rows = table.find_all("tr")
                 for row in rows:
-                    cells = [td.text.strip() for td in row.find_all(["td", "th"])]
+                    cells = [td.get_text(" ", strip=True) for td in row.find_all(["td", "th"])]
                     cell_text = " ".join(cells)
-                    if "申购状态" in cell_text:
-                        if "暂停申购" in cell_text:
-                            purchase_status = "暂停"
-                        elif "限大额" in cell_text:
-                            purchase_status = "限大额"
-                        elif "开放申购" in cell_text:
-                            purchase_status = "开放"
-                    if "赎回状态" in cell_text:
-                        if "暂停赎回" in cell_text:
-                            redeem_status = "暂停"
-                        elif "开放赎回" in cell_text:
-                            redeem_status = "开放"
-            
-            # Fallback: check the main fund page
+                    purchase_hint = (
+                        "申购状态" in cell_text
+                        or "开放申购" in cell_text
+                        or "暂停申购" in cell_text
+                        or "限制大额申购" in cell_text
+                        or "限大额" in cell_text
+                    )
+                    redeem_hint = (
+                        "赎回状态" in cell_text
+                        or "开放赎回" in cell_text
+                        or "暂停赎回" in cell_text
+                    )
+                    if purchase_status == "未知" and purchase_hint:
+                        normalized = _normalize_purchase_status_text(cell_text)
+                        if _status_known(normalized):
+                            purchase_status = normalized
+                    if redeem_status == "未知" and redeem_hint:
+                        normalized = _normalize_redeem_status_text(cell_text)
+                        if _status_known(normalized):
+                            redeem_status = normalized
+                    if purchase_status != "未知" and redeem_status != "未知":
+                        break
+                if purchase_status != "未知" and redeem_status != "未知":
+                    break
+
+            # Fallback: check the main fund page.
             if purchase_status == "未知" or redeem_status == "未知":
                 url2 = f"http://fund.eastmoney.com/{fund_code}.html"
                 async with session.get(url2, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
                     text2 = await resp2.text()
                     if purchase_status == "未知":
-                        if "暂停申购" in text2 or "限制申购" in text2:
-                            purchase_status = "暂停"
-                        elif "限大额" in text2:
-                            purchase_status = "限大额"
-                        elif "开放申购" in text2:
-                            purchase_status = "开放"
+                        normalized = _normalize_purchase_status_text(text2)
+                        if _status_known(normalized):
+                            purchase_status = normalized
                     if redeem_status == "未知":
-                        if "暂停赎回" in text2:
-                            redeem_status = "暂停"
-                        elif "开放赎回" in text2:
-                            redeem_status = "开放"
-            
+                        normalized = _normalize_redeem_status_text(text2)
+                        if _status_known(normalized):
+                            redeem_status = normalized
+
             return {
                 "purchase_status": purchase_status,
                 "redeem_status": redeem_status,
                 "yesterday_purchase_shares": 0,
+                "status_source": "original.eastmoney.f10_or_fund_page",
             }
     except Exception as e:
         logger.error(f"Error fetching purchase status for {fund_code}: {e}")
-    return {"purchase_status": "未知", "redeem_status": "未知", "yesterday_purchase_shares": 0}
+    return {
+        "purchase_status": purchase_status,
+        "redeem_status": redeem_status,
+        "yesterday_purchase_shares": 0,
+        "status_source": "original.eastmoney.f10_or_fund_page_failed",
+    }
 
 
 async def fetch_fund_share_change(session: aiohttp.ClientSession, fund_code: str) -> dict:
