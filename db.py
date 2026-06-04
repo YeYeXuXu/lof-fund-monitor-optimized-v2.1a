@@ -152,6 +152,20 @@ async def init_db():
                 coverage_ratio REAL DEFAULT 0,
                 target_exposure REAL DEFAULT 0,
                 residual_ratio REAL DEFAULT 0,
+                source_estimated_nav REAL DEFAULT 0,
+                source_estimated_change_rate REAL DEFAULT 0,
+                source_estimate_time TEXT DEFAULT '',
+                akshare_source TEXT DEFAULT '',
+                akshare_premium_rate REAL DEFAULT NULL,
+                iopv_estimated_nav REAL DEFAULT 0,
+                nav_source TEXT DEFAULT '',
+                estimate_source TEXT DEFAULT '',
+                price_source TEXT DEFAULT '',
+                trade_amount_source TEXT DEFAULT '',
+                premium_source TEXT DEFAULT '',
+                premium_base_nav REAL DEFAULT 0,
+                premium_base_source TEXT DEFAULT '',
+                status_source TEXT DEFAULT '',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -249,6 +263,20 @@ async def init_db():
             ("coverage_ratio", "REAL DEFAULT 0"),
             ("target_exposure", "REAL DEFAULT 0"),
             ("residual_ratio", "REAL DEFAULT 0"),
+            ("source_estimated_nav", "REAL DEFAULT 0"),
+            ("source_estimated_change_rate", "REAL DEFAULT 0"),
+            ("source_estimate_time", "TEXT DEFAULT ''"),
+            ("akshare_source", "TEXT DEFAULT ''"),
+            ("akshare_premium_rate", "REAL DEFAULT NULL"),
+            ("iopv_estimated_nav", "REAL DEFAULT 0"),
+            ("nav_source", "TEXT DEFAULT ''"),
+            ("estimate_source", "TEXT DEFAULT ''"),
+            ("price_source", "TEXT DEFAULT ''"),
+            ("trade_amount_source", "TEXT DEFAULT ''"),
+            ("premium_source", "TEXT DEFAULT ''"),
+            ("premium_base_nav", "REAL DEFAULT 0"),
+            ("premium_base_source", "TEXT DEFAULT ''"),
+            ("status_source", "TEXT DEFAULT ''"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE fund_realtime ADD COLUMN {col} {default}")
@@ -275,7 +303,7 @@ async def init_db():
             except Exception:
                 pass  # Column already exists
 
-        # v1.9a compatibility: older threshold alerts could be scheduled even
+        # v2.1a compatibility: older threshold alerts could be scheduled even
         # when push_enabled was 0. Preserve those existing alert schedules while
         # no longer allowing push_enabled to trigger any summary push.
         await db.execute("""
@@ -409,8 +437,8 @@ async def save_realtime(fund_code: str, data: dict):
     try:
         await db.execute(
             """INSERT OR REPLACE INTO fund_realtime
-            (fund_code, nav, nav_date, estimated_nav, estimated_change_rate, trade_price, trade_price_change, trade_amount, premium_rate, purchase_status, redeem_status, yesterday_purchase_shares, index_name, overseas_period, cn_ratio, us_ratio, us_index_name, model_version, valuation_method, valuation_confidence, valuation_note, coverage_ratio, target_exposure, residual_ratio, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (fund_code, nav, nav_date, estimated_nav, estimated_change_rate, trade_price, trade_price_change, trade_amount, premium_rate, purchase_status, redeem_status, yesterday_purchase_shares, index_name, overseas_period, cn_ratio, us_ratio, us_index_name, model_version, valuation_method, valuation_confidence, valuation_note, coverage_ratio, target_exposure, residual_ratio, source_estimated_nav, source_estimated_change_rate, source_estimate_time, akshare_source, akshare_premium_rate, iopv_estimated_nav, nav_source, estimate_source, price_source, trade_amount_source, premium_source, premium_base_nav, premium_base_source, status_source, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
             (fund_code, data.get("nav", 0), data.get("nav_date", ""), data.get("estimated_nav", 0),
              data.get("estimated_change_rate", 0), data.get("trade_price", 0), data.get("trade_price_change", 0),
              data.get("trade_amount", 0),
@@ -420,7 +448,14 @@ async def save_realtime(fund_code: str, data: dict):
              data.get("us_index_name", ""), data.get("model_version", ""),
              data.get("valuation_method", ""), data.get("valuation_confidence", 0),
              data.get("valuation_note", ""), data.get("coverage_ratio", 0),
-             data.get("target_exposure", 0), data.get("residual_ratio", 0))
+             data.get("target_exposure", 0), data.get("residual_ratio", 0),
+             data.get("source_estimated_nav", 0), data.get("source_estimated_change_rate", 0),
+             data.get("source_estimate_time", ""), data.get("akshare_source", ""),
+             data.get("akshare_premium_rate"), data.get("iopv_estimated_nav", 0),
+             data.get("nav_source", ""), data.get("estimate_source", ""),
+             data.get("price_source", ""), data.get("trade_amount_source", ""),
+             data.get("premium_source", ""), data.get("premium_base_nav", 0),
+             data.get("premium_base_source", ""), data.get("status_source", ""))
         )
         await db.commit()
     finally:
@@ -456,6 +491,10 @@ async def get_all_realtime(category: str = "", sort_by: str = "", sort_order: st
                    r.overseas_period, r.cn_ratio, r.us_ratio, r.us_index_name,
                    r.model_version, r.valuation_method, r.valuation_confidence, r.valuation_note,
                    r.coverage_ratio, r.target_exposure, r.residual_ratio,
+                   r.source_estimated_nav, r.source_estimated_change_rate, r.source_estimate_time,
+                   r.akshare_source, r.akshare_premium_rate, r.iopv_estimated_nav,
+                   r.nav_source, r.estimate_source, r.price_source, r.trade_amount_source,
+                   r.premium_source, r.premium_base_nav, r.premium_base_source, r.status_source,
                    r.updated_at
             FROM funds f
             LEFT JOIN fund_realtime r ON f.fund_code = r.fund_code
@@ -476,6 +515,10 @@ async def get_all_realtime(category: str = "", sort_by: str = "", sort_order: st
                 'overseas_period': 0, 'cn_ratio': 0, 'us_ratio': 0, 'us_index_name': '',
                 'model_version': '', 'valuation_method': '', 'valuation_confidence': 0, 'valuation_note': '',
                 'coverage_ratio': 0, 'target_exposure': 0, 'residual_ratio': 0,
+                'source_estimated_nav': 0, 'source_estimated_change_rate': 0, 'source_estimate_time': '',
+                'akshare_source': '', 'akshare_premium_rate': None, 'iopv_estimated_nav': 0,
+                'nav_source': '', 'estimate_source': '', 'price_source': '', 'trade_amount_source': '',
+                'premium_source': '', 'premium_base_nav': 0, 'premium_base_source': '', 'status_source': '',
             }
             for k, v in defaults.items():
                 if d.get(k) is None:
@@ -497,6 +540,10 @@ async def get_realtime(code: str):
                    r.overseas_period, r.cn_ratio, r.us_ratio, r.us_index_name,
                    r.model_version, r.valuation_method, r.valuation_confidence, r.valuation_note,
                    r.coverage_ratio, r.target_exposure, r.residual_ratio,
+                   r.source_estimated_nav, r.source_estimated_change_rate, r.source_estimate_time,
+                   r.akshare_source, r.akshare_premium_rate, r.iopv_estimated_nav,
+                   r.nav_source, r.estimate_source, r.price_source, r.trade_amount_source,
+                   r.premium_source, r.premium_base_nav, r.premium_base_source, r.status_source,
                    r.updated_at
             FROM funds f
             LEFT JOIN fund_realtime r ON f.fund_code = r.fund_code
@@ -515,6 +562,10 @@ async def get_realtime(code: str):
             'overseas_period': 0, 'cn_ratio': 0, 'us_ratio': 0, 'us_index_name': '',
             'model_version': '', 'valuation_method': '', 'valuation_confidence': 0, 'valuation_note': '',
             'coverage_ratio': 0, 'target_exposure': 0, 'residual_ratio': 0,
+            'source_estimated_nav': 0, 'source_estimated_change_rate': 0, 'source_estimate_time': '',
+            'akshare_source': '', 'akshare_premium_rate': None, 'iopv_estimated_nav': 0,
+            'nav_source': '', 'estimate_source': '', 'price_source': '', 'trade_amount_source': '',
+            'premium_source': '', 'premium_base_nav': 0, 'premium_base_source': '', 'status_source': '',
         }
         for k, v in defaults.items():
             if d.get(k) is None:

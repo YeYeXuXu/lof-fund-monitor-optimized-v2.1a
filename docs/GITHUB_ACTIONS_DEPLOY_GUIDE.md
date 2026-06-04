@@ -25,7 +25,7 @@
 
 ### 方式 A：网页上传，适合不熟悉命令行
 
-1. 解压 `lof-fund-monitor-optimized-v1.9a.zip`。
+1. 解压 `lof-fund-monitor-optimized-v2.1a.zip`。
 2. 进入解压后的文件夹，确认能看到 `server.py`、`requirements.txt`、`.github`、`scripts` 等文件。
 3. 回到刚创建的 GitHub 仓库页面。
 4. 如果页面显示 `Quick setup`，点击 `uploading an existing file`。
@@ -58,7 +58,7 @@ git push -u origin main
 9. `Secret` 填你的 Server酱 SendKey；如果要同时推送给两个以上微信，填多个 SendKey，用英文逗号、分号、空格或换行分隔，例如：`SCTxxxx1,SCTxxxx2`。
 10. 点击 `Add secret`。
 
-兼容旧变量名：如果你已经配置了 `WECHAT_SEND_KEY`，可以继续使用；v1.9a 也支持在 `WECHAT_SEND_KEY` 里填写多个 SendKey。若 `SERVERCHAN_SENDKEYS` 和 `WECHAT_SEND_KEY` 同时存在，系统会合并去重后逐个发送。
+兼容旧变量名：如果你已经配置了 `WECHAT_SEND_KEY`，可以继续使用；v2.1a 也支持在 `WECHAT_SEND_KEY` 里填写多个 SendKey。若 `SERVERCHAN_SENDKEYS` 和 `WECHAT_SEND_KEY` 同时存在，系统会合并去重后逐个发送。
 
 没有配置 `SERVERCHAN_SENDKEYS` 或 `WECHAT_SEND_KEY` 时，工作流仍会运行和刷新数据，但不会发送微信告警。
 
@@ -79,7 +79,7 @@ git push -u origin main
 | `PREMIUM_UPPER` | `3` | 溢价率大于等于 3% 告警 |
 | `DISCOUNT_LOWER` | `-5` | 折价率小于等于 -5% 告警 |
 | `MIN_TURNOVER` | `60` | 成交额至少 60 万元 |
-| `WECHAT_PUSH_GRACE_SECONDS` | `90` | 用于允许启动/调度轻微滞后的推送时间窗口；v1.9a 起不再等待数据刷新锁 |
+| `WECHAT_PUSH_GRACE_SECONDS` | `90` | 用于允许启动/调度轻微滞后的推送时间窗口；v2.1a 起不再等待数据刷新锁 |
 | `ACTIONS_PUSH_GRACE_SECONDS` | `90` | 当结束时间与微信推送时间重合时，额外等待的保护秒数 |
 | `ACTIONS_REFRESH_HOLDINGS` | `0` | Actions 中默认不跑完整持仓刷新；设为 `1` 可恢复 |
 | `ACTIONS_FETCH_PURCHASE_STATUS` | `0` | 默认优先用 AkShare `fund_purchase_em` 批量状态；失败自动回退原接口，设为 `1` 可额外强制逐只刷新 |
@@ -87,20 +87,20 @@ git push -u origin main
 | `AKSHARE_FUND_HTTP_RETRIES` | `3` | AkShare/EastMoney 断连或超时后的重试次数 |
 | `AKSHARE_FUND_HTTP_TIMEOUT` | `8` | 单次 AkShare/EastMoney 请求超时秒数 |
 
-如果不配置这些 Variables，脚本会使用上面的默认值。v1.9a 会优先使用 AkShare 批量快照做行情、IOPV、折溢价率、申购/赎回状态和微信阈值筛选；缺失字段再走原有接口。
+如果不配置这些 Variables，脚本会使用上面的默认值。v2.1a 会优先使用 AkShare 批量快照做行情、IOPV、折溢价率、申购/赎回状态和微信阈值筛选；缺失字段再走原有接口。
 
 ## 5. 启用并手动测试 GitHub Actions
 
 1. 打开仓库主页。
 2. 点击上方 `Actions` 标签。
 3. 如果看到提示 `Workflows aren’t being run on this forked repository` 或类似安全提示，点击 `I understand my workflows, go ahead and enable them`。
-4. 左侧工作流列表中点击 `LOF Fund Monitor v1.9a 09:30-15:00`。
+4. 左侧工作流列表中点击 `LOF Fund Monitor v2.1a 09:30-15:00`。
 5. 右侧点击 `Run workflow`。
 6. `Branch` 选择 `main`。
 7. `run_until` 可以临时填一个离当前北京时间较近的结束时间，例如当前 14:10 就填 `14:20`；正式运行可填 `15:00` 或留默认。
 8. 点击绿色按钮 `Run workflow`。
 9. 等待几秒，页面出现一条新的运行记录后点击进去。
-10. 点击 job 名称 `Run LOF monitor v1.9a until 15:00 CST` 查看日志。
+10. 点击 job 名称 `Run LOF monitor v2.1a until 15:00 CST` 查看日志。
 11. 日志中看到 `[OK] LOF 监控服务已在 GitHub Actions 启动` 表示成功。
 
 ## 6. 确认自动定时
@@ -127,7 +127,7 @@ schedule:
 
 ## 7. 查看运行结果和排错
 
-- 查看运行记录：仓库主页 -> `Actions` -> `LOF Fund Monitor v1.9a 09:30-15:00` -> 点击当天运行记录。
+- 查看运行记录：仓库主页 -> `Actions` -> `LOF Fund Monitor v2.1a 09:30-15:00` -> 点击当天运行记录。
 - 查看具体日志：进入运行记录后，点击左侧或中间的 job 名称。
 - 依赖安装失败：确认 `requirements.txt` 在仓库根目录。
 - 没收到微信：确认 `SERVERCHAN_SENDKEYS` 或 `WECHAT_SEND_KEY` 是 Secret，不是 Variable；确认 Variables 中 `WECHAT_PUSH_ENABLED=1`；查看 Actions 初始化日志中的“接收方 N 个”。

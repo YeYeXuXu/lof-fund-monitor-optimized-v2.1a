@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 CST = timezone(timedelta(hours=8))
 SERVERCHAN_URL = "https://sctapi.ftqq.com"
-MODEL_VERSION_TEXT = "净值估值模型优化v1.9a"
+MODEL_VERSION_TEXT = "净值估值模型优化v2.1a"
 
 STATUS_ICON = {
     "开放": "✅",
@@ -189,6 +189,67 @@ def _fmt_vol(amount: float) -> str:
         return f"{amount / 10000:.0f}万"
     return "--"
 
+SOURCE_LABEL_AKSHARE_RAW = "akshare数据"
+SOURCE_LABEL_AKSHARE_LOCAL = "akshare本地计算数据"
+SOURCE_LABEL_PROJECT = "项目原有方法计算"
+
+
+def _source_text(value: object) -> str:
+    """Normalize source marker text for source-label classification."""
+    return str(value or "").strip().lower()
+
+
+def _source_contains_akshare(*values: object) -> bool:
+    """Return True when any source marker clearly came from AkShare."""
+    return any("akshare" in _source_text(value) for value in values)
+
+
+def _metric_source_label(fund: dict, metric: str) -> str:
+    """Return the short source label required in WeChat alert rows.
+
+    Labels intentionally use only the user-facing text after the colon:
+    - akshare数据: raw values returned by an AkShare-compatible method.
+    - akshare本地计算数据: locally calculated values using AkShare-sourced inputs.
+    - 项目原有方法计算: values from the monitor's original fallback/model path.
+    """
+    if metric == "trade_price":
+        return SOURCE_LABEL_AKSHARE_RAW if _source_contains_akshare(fund.get("price_source")) else SOURCE_LABEL_PROJECT
+
+    if metric == "trade_amount":
+        source = fund.get("trade_amount_source") or fund.get("amount_source") or fund.get("price_source")
+        return SOURCE_LABEL_AKSHARE_RAW if _source_contains_akshare(source) else SOURCE_LABEL_PROJECT
+
+    if metric == "estimated_nav":
+        source = fund.get("estimate_source") or fund.get("valuation_method") or fund.get("nav_source")
+        return SOURCE_LABEL_AKSHARE_RAW if _source_contains_akshare(source) else SOURCE_LABEL_PROJECT
+
+    if metric == "premium_rate":
+        premium_source = _source_text(fund.get("premium_source"))
+        # AkShare ETF f402 is a raw discount-rate field; the displayed
+        # monitor convention is the signed premium/discount rate, so the
+        # displayed value is locally transformed from AkShare data.
+        if "f402" in premium_source and _source_contains_akshare(premium_source):
+            return SOURCE_LABEL_AKSHARE_LOCAL
+        if premium_source.startswith("calculated_from_"):
+            if _source_contains_akshare(
+                fund.get("price_source"),
+                fund.get("trade_amount_source"),
+                fund.get("premium_base_source"),
+                fund.get("estimate_source"),
+                fund.get("nav_source"),
+            ):
+                return SOURCE_LABEL_AKSHARE_LOCAL
+            return SOURCE_LABEL_PROJECT
+        return SOURCE_LABEL_AKSHARE_RAW if _source_contains_akshare(premium_source) else SOURCE_LABEL_PROJECT
+
+    return SOURCE_LABEL_PROJECT
+
+
+def _source_suffix(fund: dict, metric: str) -> str:
+    """Format the parenthesized source suffix for a WeChat metric."""
+    return f"（{_metric_source_label(fund, metric)}）"
+
+
 
 def build_threshold_alert_message(alerts: list, premium_upper: float = 3.0,
                                    discount_lower: float = -5.0,
@@ -230,10 +291,10 @@ def build_threshold_alert_message(alerts: list, premium_upper: float = 3.0,
         redeem_status_label = _status_label(a.get("redeem_status", "未知"))
         vol = _fmt_vol(a.get("trade_amount", 0))
         lines.append(f"### {direction} **{a.get('fund_code', '')}** {a.get('fund_name', '')}\n")
-        lines.append(f"- 折溢价率：**{premium:+.2f}%**  \n")
-        lines.append(f"- 交易价格：{a.get('trade_price', '--')}  \n")
-        lines.append(f"- 估算净值：{a.get('estimated_nav', '--')}  \n")
-        lines.append(f"- 成交金额：{vol}  \n")
+        lines.append(f"- 折溢价率：**{premium:+.2f}%**{_source_suffix(a, 'premium_rate')}  \n")
+        lines.append(f"- 交易价格：{a.get('trade_price', '--')}{_source_suffix(a, 'trade_price')}  \n")
+        lines.append(f"- 估算净值：{a.get('estimated_nav', '--')}{_source_suffix(a, 'estimated_nav')}  \n")
+        lines.append(f"- 成交金额：{vol}{_source_suffix(a, 'trade_amount')}  \n")
         lines.append(f"- 申购状态：{purchase_status_label}  \n")
         lines.append(f"- 赎回状态：{redeem_status_label}  \n")
         lines.append("")

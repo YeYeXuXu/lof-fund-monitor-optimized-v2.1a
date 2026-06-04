@@ -95,19 +95,21 @@ def _as_float(value: object, default: float = 0.0) -> float:
 
 
 def _recalculate_premium_if_needed(data: dict) -> None:
-    """Calculate premium/discount when AkShare did not supply official f402.
+    """Calculate premium/discount when no direct AkShare signed value exists.
 
-    ETF rows from AkShare can include f402 (基金折价率), which is kept as the
-    authoritative signed premium/discount value.  LOF rows in AkShare v1.18.64
-    do not expose f402/f441, so their display/alert value is calculated from
-    trade price versus the best available intraday estimate, falling back to the
-    latest official NAV.  The calculation base is recorded for logs.
+    AkShare ETF f402 is named ``基金折价率``: positive means discount and
+    negative means premium.  The adapter converts it once into the monitor's
+    signed convention (discount < 0, premium > 0) and stores it in
+    ``akshare_premium_rate``.  LOF rows in AkShare v1.18.64 do not expose
+    f402/f441, so LOF display/alert values are calculated from trade price versus
+    the best available estimated NAV, falling back to latest official NAV only
+    when no estimate is available.  The calculation base is recorded for logs.
     """
     if data.get("akshare_premium_rate") is not None:
         premium = _as_float(data.get("akshare_premium_rate"), 0.0)
         data["premium_rate"] = round(premium, 2)
         if not data.get("premium_source"):
-            data["premium_source"] = data.get("akshare_source") or "akshare.fund_etf_spot_em:f402"
+            data["premium_source"] = data.get("akshare_source") or "akshare.fund_etf_spot_em:f402_基金折价率取反为折溢价率"
         return
 
     trade_price = _as_float(data.get("trade_price"), 0.0)
@@ -396,9 +398,9 @@ async def _apply_valuation_model(session: aiohttp.ClientSession, fund: dict, dat
     """Apply the unified NAV valuation model and write normalized fields into data.
 
     AkShare official spot IOPV has priority when available: in AkShare
-    ``fund_etf_spot_em`` f441 is ``IOPV实时估值`` and f402 is the signed
-    ``基金折价率`` value.  The same f402 value is used as the monitor's
-    premium/discount rate for display and WeChat filtering.
+    ``fund_etf_spot_em`` f441 is ``IOPV实时估值`` and f402 is ``基金折价率``.
+    The adapter converts f402 to the monitor's signed premium/discount rate
+    (discount < 0, premium > 0) before display and WeChat filtering.
     """
     iopv = data.get("iopv_estimated_nav", 0) or 0
     try:
@@ -412,18 +414,18 @@ async def _apply_valuation_model(session: aiohttp.ClientSession, fund: dict, dat
         data["estimate_source"] = data.get("estimate_source") or data.get("akshare_source") or "akshare.fund_etf_spot_em:f441"
         if data.get("akshare_premium_rate") is not None:
             data["premium_rate"] = round(float(data.get("akshare_premium_rate") or 0), 2)
-            data["premium_source"] = data.get("premium_source") or data.get("akshare_source") or "akshare.fund_etf_spot_em:f402"
-        data["model_version"] = "净值估值模型优化v1.9a"
+            data["premium_source"] = data.get("premium_source") or data.get("akshare_source") or "akshare.fund_etf_spot_em:f402_基金折价率取反为折溢价率"
+        data["model_version"] = "净值估值模型优化v2.1a"
         data["valuation_method"] = "akshare_fund_etf_spot_em_iopv"
         data["valuation_confidence"] = 0.9
-        data["valuation_note"] = "优先使用 AkShare fund_etf_spot_em：f441=IOPV实时估值；f402=基金折价率/溢价率同一值"
+        data["valuation_note"] = "优先使用 AkShare fund_etf_spot_em：f441=IOPV实时估值；f402=基金折价率，已取反为折溢价率"
         return
 
     source_estimated_nav = _as_float(data.get("source_estimated_nav"), 0.0)
     estimate_source_text = f"{data.get('estimate_source', '')};{data.get('akshare_source', '')}"
     if source_estimated_nav > 0 and "akshare.fund_value_estimation_em" in estimate_source_text:
         data["estimated_nav"] = round(source_estimated_nav, 4)
-        data["model_version"] = "净值估值模型优化v1.9a"
+        data["model_version"] = "净值估值模型优化v2.1a"
         data["valuation_method"] = "akshare_fund_value_estimation_em"
         data["valuation_confidence"] = 0.85
         data["valuation_note"] = "优先使用 AkShare fund_value_estimation_em 净值估算；缺失时才回退本地估值模型"
@@ -610,7 +612,8 @@ async def _fetch_fund_data_with_session(
         "source_estimated_nav": 0, "source_estimated_change_rate": 0, "source_estimate_time": "",
         "model_version": "", "valuation_method": "", "valuation_confidence": 0, "valuation_note": "",
         "akshare_source": "", "akshare_premium_rate": None, "iopv_estimated_nav": 0,
-        "nav_source": "", "estimate_source": "", "price_source": "", "premium_source": "",
+        "nav_source": "", "estimate_source": "", "price_source": "", "trade_amount_source": "",
+        "premium_source": "", "premium_base_nav": 0, "premium_base_source": "",
         "status_source": "",
     }
 
@@ -668,6 +671,7 @@ async def _fetch_fund_data_with_session(
             result["trade_price_change"] = price_data.get("trade_price_change", 0)
             result["trade_amount"] = price_data.get("amount", 0)
             result["price_source"] = "original.eastmoney.push2delay.stock.get"
+            result["trade_amount_source"] = "original.eastmoney.push2delay.stock.get"
 
     # 4) Holdings are expensive and change slowly.  Use cached rows first during
     # regular quote refreshes; the dedicated daily/manual holdings refresh still
@@ -728,7 +732,7 @@ async def _fetch_fund_data_with_session(
         except Exception as exc:
             logger.debug("Share change fallback failed for %s: %s", fund_code, exc)
 
-    # 6) Calculate premium only when AkShare did not provide f402.
+    # 6) Calculate premium only when AkShare did not provide a signed f402-derived value.
     _recalculate_premium_if_needed(result)
 
     return result
@@ -1249,7 +1253,7 @@ def _format_push_percent(value: float) -> str:
 
 
 def _build_threshold_alert_title(values: dict, conditions: list) -> str:
-    """Build the only scheduled WeChat push title for v1.9a.
+    """Build the only scheduled WeChat push title for v2.1a.
 
     Example: LOF折溢价告警 溢价3% 成交60万
     """
@@ -1345,7 +1349,7 @@ async def check_threshold_alerts(config: dict = None) -> dict:
         if values["discount_enabled"]:
             enabled_conditions.append("discount_lower")
 
-        # v1.9a: automatic WeChat push sends exactly one threshold-alert message
+        # v2.1a: automatic WeChat push sends exactly one threshold-alert message
         # with a compact title such as "LOF折溢价告警 溢价3% 折价-5% 成交60万".
         title = _build_threshold_alert_title(values, enabled_conditions)
         content = build_threshold_alert_message(
@@ -1371,7 +1375,7 @@ async def check_threshold_alerts(config: dict = None) -> dict:
 
 
 async def periodic_wechat_push():
-    """Automatic WeChat alert task for v1.9a.
+    """Automatic WeChat alert task for v2.1a.
 
     Strict rules:
     1. Only the configured push_time values are allowed to trigger a push.
@@ -1821,13 +1825,13 @@ async def api_save_wechat_config(request):
 
 
 async def api_test_wechat_push(request):
-    """v1.9a keeps this route as a no-op so no extra WeChat messages are sent."""
-    return web.json_response({"code": -1, "msg": "v1.9a 已取消测试推送；微信只在设置时间发送 1 条 LOF折溢价告警"})
+    """v2.1a keeps this route as a no-op so no extra WeChat messages are sent."""
+    return web.json_response({"code": -1, "msg": "v2.1a 已取消测试推送；微信只在设置时间发送 1 条 LOF折溢价告警"})
 
 
 async def api_send_summary_now(request):
-    """v1.9a removes summary pushes; keep this route as a safe no-op for compatibility."""
-    return web.json_response({"code": -1, "msg": "v1.9a 已取消汇总推送；自动微信推送只在设置时间发送 1 条 LOF折溢价告警"})
+    """v2.1a removes summary pushes; keep this route as a safe no-op for compatibility."""
+    return web.json_response({"code": -1, "msg": "v2.1a 已取消汇总推送；自动微信推送只在设置时间发送 1 条 LOF折溢价告警"})
 
 
 # ============ Static File Serving ============

@@ -5,15 +5,20 @@ This module embeds the fund-information fetching approach used by
 ``aiohttp`` and plain dictionaries instead of importing pandas/requests.
 
 Embedded AkShare methods:
-- ``fund_etf_spot_em``: EastMoney ETF spot list.  The project explicitly uses
-  f441 as ``IOPV实时估值`` and f402 as ``基金折价率``; the same f402 value is
-  also treated as the fund premium/discount rate used by alerts.
-- ``fund_lof_spot_em``: EastMoney LOF spot list.
+- ``fund_etf_spot_em``: EastMoney ETF spot list.  AkShare maps f441 to
+  ``IOPV实时估值`` and f402 to ``基金折价率``.  f402 is a discount-rate field,
+  so the monitor converts it to the signed alert value with
+  ``折溢价率 = -基金折价率``: discount is negative, premium is positive.
+- ``fund_lof_spot_em``: EastMoney LOF spot list.  AkShare v1.18.64 exposes
+  quote/turnover fields here but not f402/f441, so LOF premium/discount should
+  be locally calculated from price and the best available estimated NAV.
 - ``fund_value_estimation_em``: EastMoney fund valuation list.
-- ``fund_purchase_em``: EastMoney/Tiantian batch purchase/redemption status.
+- ``fund_purchase_em``: EastMoney/Tiantian batch purchase/redemption status and
+  latest official NAV.
 
-When any of these AkShare-derived endpoints is unavailable, callers keep using
-existing project-specific fallback methods.
+When AkShare cannot provide direct f402 or all data needed for local
+premium/discount calculation, callers keep using existing project-specific
+fallback methods.
 """
 from __future__ import annotations
 
@@ -100,14 +105,13 @@ ETF_SPOT_PARAMS = {
 LOF_SPOT_PARAMS = {
     **_COMMON_CLIST_PARAMS,
     "fid": "f3",
-    # Same market scope as akshare.fund_lof_spot_em.
+    # Same market scope and field set as akshare.fund_lof_spot_em in v1.18.64.
+    # That official AkShare method does not expose f402/f441 for LOF rows.
     "fs": "b:MK0404,b:MK0405,b:MK0406,b:MK0407",
-    # f402/f441/f297/f124 are requested opportunistically.  If EastMoney does
-    # not return them for LOF rows, the existing fallback calculation remains in use.
     "fields": (
         "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,"
         "f15,f16,f17,f18,f20,f21,f23,f24,f25,f22,f11,"
-        "f62,f128,f136,f115,f152,f297,f402,f441,f124"
+        "f62,f128,f136,f115,f152"
     ),
 }
 
@@ -423,14 +427,32 @@ async def _fetch_clist_rows(
     return []
 
 
-def _normalize_spot_rows(rows: list[dict[str, Any]], source_name: str) -> dict[str, dict[str, Any]]:
+def _akshare_discount_to_signed_premium(discount_rate: float | None) -> float | None:
+    """Convert AkShare f402 ``基金折价率`` to monitor's signed rate.
+
+    EastMoney/AkShare names f402 as a discount-rate field: a positive number
+    means discount and a negative number means premium.  The monitor, UI and
+    WeChat filters use the opposite signed convention: discount < 0, premium > 0.
+    """
+    if discount_rate is None:
+        return None
+    return -discount_rate
+
+
+def _normalize_spot_rows(
+    rows: list[dict[str, Any]],
+    source_name: str,
+    *,
+    include_iopv_discount_fields: bool,
+) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
         code = _normalize_code(row.get("f12"))
         if not code:
             continue
-        iopv = _to_float(row.get("f441"), 0.0)
-        discount_rate = _to_float_or_none(row.get("f402"))
+        iopv = _to_float(row.get("f441"), 0.0) if include_iopv_discount_fields else 0.0
+        discount_rate = _to_float_or_none(row.get("f402")) if include_iopv_discount_fields else None
+        signed_premium_rate = _akshare_discount_to_signed_premium(discount_rate)
         trade_price = _to_float(row.get("f2"), 0.0)
         change_amount = _to_float(row.get("f4"), 0.0)
         change_rate = _to_float(row.get("f3"), 0.0)
@@ -448,12 +470,12 @@ def _normalize_spot_rows(rows: list[dict[str, Any]], source_name: str) -> dict[s
             "low": _to_float(row.get("f16"), 0.0),
             "previous_close": _to_float(row.get("f18"), 0.0),
             "iopv_estimated_nav": iopv,
-            # f402 is explicitly mapped to 基金折价率 by AkShare.  The monitor uses
-            # the same signed value as the alert premium/discount rate.
+            # Raw AkShare f402: 基金折价率.  Keep it for diagnostics, but expose
+            # premium_rate using monitor semantics: discount negative, premium positive.
             "fund_discount_rate": discount_rate,
-            "premium_rate": discount_rate,
-            "data_date": _format_data_date(row.get("f297")),
-            "quote_time": _format_timestamp_seconds(row.get("f124")),
+            "premium_rate": signed_premium_rate,
+            "data_date": _format_data_date(row.get("f297")) if include_iopv_discount_fields else "",
+            "quote_time": _format_timestamp_seconds(row.get("f124")) if include_iopv_discount_fields else "",
             "source": source_name,
         }
         result[code] = spot
@@ -462,12 +484,12 @@ def _normalize_spot_rows(rows: list[dict[str, Any]], source_name: str) -> dict[s
 
 async def fetch_akshare_etf_spot(session: aiohttp.ClientSession) -> dict[str, dict[str, Any]]:
     rows = await _fetch_clist_rows(session, _ETF_SPOT_URLS, ETF_SPOT_PARAMS, "fund_etf_spot_em")
-    return _normalize_spot_rows(rows, "akshare.fund_etf_spot_em")
+    return _normalize_spot_rows(rows, "akshare.fund_etf_spot_em", include_iopv_discount_fields=True)
 
 
 async def fetch_akshare_lof_spot(session: aiohttp.ClientSession) -> dict[str, dict[str, Any]]:
     rows = await _fetch_clist_rows(session, _LOF_SPOT_URLS, LOF_SPOT_PARAMS, "fund_lof_spot_em")
-    return _normalize_spot_rows(rows, "akshare.fund_lof_spot_em")
+    return _normalize_spot_rows(rows, "akshare.fund_lof_spot_em", include_iopv_discount_fields=False)
 
 
 def _normalize_estimation_item(item: Any, data_meta: dict[str, Any], source_symbol: str) -> dict[str, Any] | None:
@@ -844,6 +866,7 @@ def apply_akshare_fund_data_to_result(
             result["trade_price_change"] = round(_to_float(spot.get("trade_price_change"), 0), 4)
         if _to_float(spot.get("trade_amount"), 0) > 0:
             result["trade_amount"] = _to_float(spot.get("trade_amount"), 0)
+            result["trade_amount_source"] = source
         if spot.get("data_date") and not result.get("nav_date"):
             result["nav_date"] = spot.get("data_date", "")
         iopv = _to_float(spot.get("iopv_estimated_nav"), 0)
@@ -853,12 +876,14 @@ def apply_akshare_fund_data_to_result(
             result["iopv_estimated_nav"] = round(iopv, 4)
             result["estimate_source"] = f"{source}:f441_IOPV实时估值"
             result["source_estimate_time"] = spot.get("quote_time") or spot.get("data_date") or result.get("source_estimate_time", "")
+        raw_discount_rate = spot.get("fund_discount_rate")
+        if raw_discount_rate is not None:
+            result["fund_discount_rate"] = round(_to_float(raw_discount_rate, 0), 2)
         premium_rate = spot.get("premium_rate")
         if premium_rate is not None:
             result["premium_rate"] = round(_to_float(premium_rate, 0), 2)
             result["akshare_premium_rate"] = result["premium_rate"]
-            result["fund_discount_rate"] = result["premium_rate"]
-            result["premium_source"] = f"{source}:f402_基金折价率"
+            result["premium_source"] = f"{source}:f402_基金折价率取反为折溢价率"
 
     if sources:
         result["akshare_source"] = ", ".join(dict.fromkeys(sources))
@@ -888,5 +913,6 @@ def overlay_akshare_realtime_for_funds(
                 item["premium_rate"] = round((trade_price - base_nav) / base_nav * 100, 2)
                 item["premium_source"] = "calculated_from_estimated_nav_and_trade_price" if est_nav else "calculated_from_nav_and_trade_price"
                 item["premium_base_nav"] = round(base_nav, 4)
+                item["premium_base_source"] = item.get("estimate_source") if est_nav else item.get("nav_source", "")
         enriched.append(item)
     return enriched
