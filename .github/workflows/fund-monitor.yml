@@ -1,4 +1,4 @@
-name: LOF Fund Monitor v2.1a 09:30-15:00 CST
+name: LOF Fund Monitor v2.2a 09:30-15:00 CST
 
 on:
   schedule:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   monitor:
-    name: Run LOF monitor v2.1a until 15:00 CST
+    name: Run LOF monitor v2.2a until 15:00 CST
     runs-on: ubuntu-latest
     timeout-minutes: 340
 
